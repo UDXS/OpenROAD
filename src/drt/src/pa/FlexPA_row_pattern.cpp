@@ -278,7 +278,7 @@ void FlexPA::genInstRowPatternInit(
   for (int inst_idx = 0; inst_idx < (int) insts.size(); inst_idx++) {
     auto& inst = insts[inst_idx];
     auto unique_class = unique_insts_.getUniqueClass(inst);
-<<<<<<< HEAD
+
     auto& inst_patterns = unique_inst_patterns_[unique_class];
 
     // Calculating center of route guides of this inst 
@@ -445,11 +445,6 @@ void FlexPA::genInstRowPatternInit(
       term_min_dists[inst_term.get()] = std::max(min_d, 1.0); 
     }
 
-
-    
-=======
-    auto& inst_patterns = unique_inst_patterns_.at(unique_class);
->>>>>>> d2983c936008ba3f347532aec872113b96db33e1
     nodes[inst_idx]
         = std::vector<std::unique_ptr<FlexDPNode>>(inst_patterns.size());
 
