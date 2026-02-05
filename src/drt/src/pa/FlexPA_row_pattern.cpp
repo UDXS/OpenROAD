@@ -293,16 +293,16 @@ void FlexPA::genInstRowPatternInit(
         frNet* net = inst_term->getNet();
         std::vector<std::pair<odb::Rect, int>> guide_boxes; 
 
+
+        std::map<int, int> weights{{LAYER_NUM("M1"), 10}, 
+                                    {LAYER_NUM("M2"), 10},
+                                    {LAYER_NUM("M3"), 8}, 
+                                    {LAYER_NUM("M4"), 4}, 
+                                    {LAYER_NUM("M5"), 2}};
+
         for (auto& guide : net->getGuides()) {
           odb::Rect guide_box = guide->getBBox();
           int weight = 0; 
-
-          std::map<int, int> weights{{LAYER_NUM("M1"), 10},
-                                      {LAYER_NUM("M2"), 10},
-                                      {LAYER_NUM("M3"), 8},
-                                      {LAYER_NUM("M4"), 4},
-                                      {LAYER_NUM("M5"), 2}};
-
           if (weights.find(guide->getBeginLayerNum()) != weights.end()) {
             weight = weights[guide->getBeginLayerNum()];
           } else {
@@ -335,7 +335,8 @@ void FlexPA::genInstRowPatternInit(
                           net->getName());
             xAvg = inst_term->getBBox().center().x();
             yAvg = inst_term->getBBox().center().y();
-          } else {
+          } 
+          else {
             xAvg /= static_cast<int>(guide_boxes.size());
             yAvg /= static_cast<int>(guide_boxes.size());
           }
@@ -360,7 +361,8 @@ void FlexPA::genInstRowPatternInit(
                           "PA RTGuide Mode 2: No routeguide or no in-range "
                           "routeguide on {}",
                           net->getName());
-          } else {
+          } 
+          else {
             xAvg /= sumWeight;
             yAvg /= sumWeight;
           }
@@ -374,7 +376,8 @@ void FlexPA::genInstRowPatternInit(
             auto box = guide_boxes[0].first;
             xAvg = box.xCenter();
             yAvg = box.yCenter();
-          } else {
+          } 
+          else {
             logger_->warn(DRT,
                           121,
                           "PA RTGuide Mode 3: No routeguide on {}",
@@ -404,7 +407,8 @@ void FlexPA::genInstRowPatternInit(
   
             xAvg = firstNonVia.xCenter();
             yAvg = firstNonVia.yCenter();
-          } else {
+          } 
+          else {
             logger_->warn(DRT,
                           209,
                           "PA RTGuide Mode 4: No routeguide on {}",
@@ -412,7 +416,53 @@ void FlexPA::genInstRowPatternInit(
             xAvg = inst_term->getBBox().center().x();
             yAvg = inst_term->getBBox().center().y();
           }
-        } else if (router_cfg_->PA_RTGUIDE_MODE != 0) {
+        } 
+
+        // --------------------------------------------------------
+        // Mode 5: Center of first two RTGuide Segments
+        // --------------------------------------------------------
+
+        else if (router_cfg_->PA_RTGUIDE_MODE == 5) {
+          if (guide_boxes.size() >= 2){
+            xAvg = ((guide_boxes[0].first).xCenter() + (guide_boxes[1].first).xCenter())/2; 
+            yAvg = ((guide_boxes[0].first).yCenter() + (guide_boxes[1].first).yCenter())/2; 
+          }
+          else if (guide_boxes.size() == 1){ 
+            xAvg = (guide_boxes[0].first).xCenter(); 
+            yAvg = (guide_boxes[0].first).yCenter();             
+          }
+          else {
+            logger_->warn(DRT, 211, "PA RTGuide Mode 5: No routeguide on {}", net->getName());
+              xAvg = inst_term->getBBox().center().x();
+              yAvg = inst_term->getBBox().center().y();
+          }
+        }
+
+        // --------------------------------------------------------
+        // Mode 6: Weighted Center of first two RTGuide Segments
+        // --------------------------------------------------------
+
+        else if (router_cfg_->PA_RTGUIDE_MODE == 6) {
+          if (guide_boxes.size() >= 2){
+            int w0 = guide_boxes[0].second; 
+            int w1 = guide_boxes[1].second; 
+            // Prevent divide by zero
+            int total_w = std::max(1, w0 + w1); 
+            xAvg = ((guide_boxes[0].first).xCenter() * w0 + (guide_boxes[1].first).xCenter() * w1)/total_w; 
+            yAvg = ((guide_boxes[0].first).yCenter() * w0 + (guide_boxes[1].first).yCenter() * w1)/total_w; 
+          }
+          else if (guide_boxes.size() == 1){ 
+            xAvg = (guide_boxes[0].first).xCenter(); 
+            yAvg = (guide_boxes[0].first).yCenter();             
+          }
+          else {
+            logger_->warn(DRT, 212, "PA RTGuide Mode 6: No routeguide on {}", net->getName());
+              xAvg = inst_term->getBBox().center().x();
+              yAvg = inst_term->getBBox().center().y();
+          }
+        }
+
+        else if (router_cfg_->PA_RTGUIDE_MODE != 0) {
           logger_->warn(DRT,
                         111,
                         "PA RTGuide Usage Mode: {}",
@@ -423,73 +473,53 @@ void FlexPA::genInstRowPatternInit(
       }
     }
 
-    // Find closest guide distance to normalize penalty
+    nodes[inst_idx] = std::vector<std::unique_ptr<FlexDPNode>>(inst_patterns.size());
 
-    std::map<frInstTerm*, double> term_min_dists;
+    // --- STEP 2: CALCULATE RAW DISTANCES FOR ALL PATTERNS ---
+    // We store {TotalDistance, PatternIndex} so we can sort them later
+    std::vector<std::pair<double, int>> pattern_rankings;
 
-    for (auto& inst_term : inst->getInstTerms()){ 
-      if (isSkipInstTerm(inst_term.get()) || !term_guide_centers.count(inst_term.get())) continue; 
+    for (int acc_pattern_idx = 0; acc_pattern_idx < (int) inst_patterns.size(); acc_pattern_idx++) {
+      nodes[inst_idx][acc_pattern_idx] = std::make_unique<FlexDPNode>();
+      // Initialize node with base index (Cost will be set later)
+      nodes[inst_idx][acc_pattern_idx]->setIdx({inst_idx, acc_pattern_idx});
 
-      odb::Point target = term_guide_centers[inst_term.get()]; 
-      double min_d = std::numeric_limits<double>::max(); 
+      auto access_pattern = inst_patterns[acc_pattern_idx].get();
+      const auto& access_points = access_pattern->getPattern();
+      
+      double pattern_total_dist = 0.0;
+      int ap_idx = 0;
 
-      for (auto& pin : inst_term->getTerm()->getPins()){ 
-        uint pin_access_idx = inst->getPinAccessIdx(); 
-        auto* pa = pin->getPinAccess(pin_access_idx); 
-        for (auto& ap : pa->getAccessPoints()){ 
-          double d = odb::Point::manhattanDistance(ap->getPoint(), target); 
-          if (d < min_d) min_d = d; 
-        }
+      for (auto& inst_term : inst->getInstTerms()) {
+         if (isSkipInstTerm(inst_term.get())) continue;
+
+         for (int pin_idx = 0; pin_idx < (int) inst_term->getTerm()->getPins().size(); pin_idx++) {
+             frAccessPoint* ap = access_points[ap_idx++];
+             if (!ap) continue;
+
+             if (term_guide_centers.count(inst_term.get())) {
+                 odb::Point target = term_guide_centers[inst_term.get()];
+                 pattern_total_dist += odb::Point::manhattanDistance(ap->getPoint(), target);
+             }
+         }
       }
-
-      term_min_dists[inst_term.get()] = std::max(min_d, 1.0); 
+      pattern_rankings.push_back({pattern_total_dist, acc_pattern_idx});
     }
 
-    nodes[inst_idx]
-        = std::vector<std::unique_ptr<FlexDPNode>>(inst_patterns.size());
 
-    for (int acc_pattern_idx = 0; acc_pattern_idx < (int) inst_patterns.size();
-         acc_pattern_idx++) {
-      nodes[inst_idx][acc_pattern_idx] = std::make_unique<FlexDPNode>();
-      auto access_pattern = inst_patterns[acc_pattern_idx].get();
+    // --- STEP 3: ASSIGN COSTS BASED ON RANK ---
+    // Sort by distance (Smallest distance = Rank 0)
+    std::sort(pattern_rankings.begin(), pattern_rankings.end());
 
-      int access_pattern_cost = access_pattern ->getCost(); 
+    // Assign penalties
+    for (int rank = 0; rank < (int)pattern_rankings.size(); ++rank) {
+        int pat_idx = pattern_rankings[rank].second;
+        // double dist = pattern_rankings[rank].first; // Unused, we only care about rank
 
-      const auto& access_points = access_pattern->getPattern(); 
-      int ap_idx = 0; 
+        int base_cost = inst_patterns[pat_idx]->getCost();
+        int rank_penalty = 2 * rank; 
 
-      for (auto& inst_term : inst->getInstTerms()) { 
-        if (isSkipInstTerm(inst_term.get())) continue; 
-
-        for (int pin_idx = 0; pin_idx < (int) inst_term->getTerm()->getPins().size(); pin_idx++){ 
-          frAccessPoint* ap = access_points[ap_idx]; 
-          ap_idx++; 
-
-          if (!ap) continue; 
-
-          // Cache lookups to avoid repeated map operations
-          auto guide_center_it = term_guide_centers.find(inst_term.get());
-          if (guide_center_it != term_guide_centers.end()){
-            const odb::Point& guide_center = guide_center_it->second;
-            odb::Point ap_loc = ap->getPoint(); 
-
-            double dist = odb::Point::manhattanDistance(ap_loc, guide_center);
-            auto min_dist_it = term_min_dists.find(inst_term.get());
-            if (min_dist_it != term_min_dists.end()) {
-              double min_dist = min_dist_it->second;
-              // Penalty is proportional to how much further the AP is from the guide
-              // compared to the minimum distance. Cap the ratio to avoid very large
-              // penalties when min_dist is very small.
-              double ratio = std::min(dist / min_dist, 10.0); // Cap at 10x
-              double penalty = 5.0 * std::max(0.0, ratio - 1.0);
-
-              access_pattern_cost += static_cast<int>(penalty);
-            }
-          }
-        }
-      }
-      nodes[inst_idx][acc_pattern_idx]->setNodeCost(access_pattern_cost);
-      nodes[inst_idx][acc_pattern_idx]->setIdx({inst_idx, acc_pattern_idx});
+        nodes[inst_idx][pat_idx]->setNodeCost(base_cost + rank_penalty);
     }
   }
 }
