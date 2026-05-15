@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "CommandLineProgress.h"
+#include "utl/Metrics.h"
 #if SPDLOG_VERSION < 10601
 #include "spdlog/details/pattern_formatter.h"
 #else
@@ -371,6 +372,15 @@ bool Logger::isPrometheusServerReadyToServe()
   }
 
   return prometheus_metrics_->is_ready() && prometheus_metrics_->port() != 0;
+}
+
+bool Logger::hasPrometheusServerStartupFailed()
+{
+  if (!prometheus_metrics_) {
+    return false;
+  }
+
+  return prometheus_metrics_->has_startup_failed();
 }
 
 uint16_t Logger::getPrometheusPort()

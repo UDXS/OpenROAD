@@ -14,6 +14,7 @@
 #include "Layers.h"
 #include "geo.h"
 #include "odb/db.h"
+#include "odb/geom.h"
 #include "robin_hood.h"
 
 namespace grt {
@@ -27,6 +28,10 @@ struct AccessPoint
 {
   PointT point;
   IntervalT layers;
+  bool operator==(const AccessPoint& ap) const
+  {
+    return point == ap.point && layers == ap.layers;
+  }
 };
 
 // Only hash and compare on the point, not the layers
@@ -100,6 +105,39 @@ class GridGraph
     return graph_edges_[layer_index][x][y];
   }
 
+  CapacityT getInitialEdgeCapacity(int layer_index, int x, int y) const
+  {
+    const int direction = layer_directions_[layer_index];
+    const int perp = (direction == MetalLayer::H) ? y : x;
+    return grid_tracks_[layer_index][perp];
+  }
+
+  const std::vector<int>& getOriginalResources() const
+  {
+    return original_resources_per_layer_;
+  }
+  void computeCongestionInformation();
+  const std::vector<int>& getTotalCapacityPerLayer() const
+  {
+    return cap_per_layer_;
+  }
+  const std::vector<int>& getTotalUsagePerLayer() const
+  {
+    return usage_per_layer_;
+  }
+  const std::vector<int>& getTotalOverflowPerLayer() const
+  {
+    return overflow_per_layer_;
+  }
+  const std::vector<int>& getMaxHorizontalOverflows() const
+  {
+    return max_h_overflow_;
+  }
+  const std::vector<int>& getMaxVerticalOverflows() const
+  {
+    return max_v_overflow_;
+  }
+
   // Costs
   int getEdgeLength(int direction, int edge_index) const;
   CostT getWireCost(int layer_index, PointT u, PointT v) const;
@@ -109,8 +147,9 @@ class GridGraph
   // Misc
   AccessPointSet selectAccessPoints(GRNet* net) const;
 
-  // Methods for updating demands
-  void commitTree(const std::shared_ptr<GRTreeNode>& tree, bool rip_up = false);
+  // Methods for updating demands - Public API
+  void addTreeUsage(const std::shared_ptr<GRTreeNode>& tree);
+  void removeTreeUsage(const std::shared_ptr<GRTreeNode>& tree);
 
   // Checks
   bool checkOverflow(int layer_index, int x, int y) const
@@ -151,12 +190,12 @@ class GridGraph
   {
     return unit_length_short_costs_[layer_index];
   }
-  void translateAccessPointsToGrid(
-      odb::dbAccessPoint* ap,
-      int x,
-      int y,
-      AccessPointSet& selected_access_points) const;
-  bool findODBAccessPoints(const GRNet* net,
+  std::vector<AccessPoint> translateAccessPointsToGrid(
+      const std::vector<odb::dbAccessPoint*>& ap,
+      const odb::Point& inst_location) const;
+  AccessPoint selectAccessPoint(
+      const std::vector<AccessPoint>& access_points) const;
+  bool findODBAccessPoints(GRNet* net,
                            AccessPointSet& selected_access_points) const;
 
   double logistic(const CapacityT& input, double slope) const;
@@ -164,10 +203,11 @@ class GridGraph
                     PointT lower,
                     CapacityT demand = 1.0) const;
 
-  // Methods for updating demands
+  // Methods for updating demands - Internal Implementation
   void commit(int layer_index, PointT lower, CapacityT demand);
   void commitWire(int layer_index, PointT lower, bool rip_up = false);
   void commitVia(int layer_index, PointT loc, bool rip_up = false);
+  void commitTree(const std::shared_ptr<GRTreeNode>& tree, bool rip_up = false);
 
   utl::Logger* logger_;
   const std::vector<std::vector<int>> gridlines_;
@@ -195,6 +235,25 @@ class GridGraph
   // gridEdges[l][x][y] stores the edge {(l, x, y), (l, x+1, y)} or {(l, x, y),
   // (l, x, y+1)} depending on the routing direction of the layer
   std::vector<std::vector<std::vector<GraphEdge>>> graph_edges_;
+  // Per-layer initial track count keyed by perpendicular index
+  // (row for H layers, column for V layers). Used to recover the
+  // pre-blockage / pre-adjustment capacity of each edge.
+  std::vector<std::vector<int>> grid_tracks_;
+  // Per-layer capacity sums captured before user-defined adjustments are
+  // applied (i.e. only blockage reductions are accounted for). Used by
+  // resource reporting so that the report can show the reduction from
+  // user adjustments analogous to FastRoute's real_cap vs cap.
+  std::vector<int> original_resources_per_layer_;
+  // Per-layer caches populated by computeCongestionInformation(). Kept
+  // valid by congestion_info_dirty_: any commit() that mutates demand
+  // marks the caches stale, so the next computeCongestionInformation()
+  // refreshes them; otherwise it returns immediately.
+  std::vector<int> cap_per_layer_;
+  std::vector<int> usage_per_layer_;
+  std::vector<int> overflow_per_layer_;
+  std::vector<int> max_h_overflow_;
+  std::vector<int> max_v_overflow_;
+  bool congestion_info_dirty_ = true;
   const Constants constants_;
 };
 

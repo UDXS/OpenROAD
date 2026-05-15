@@ -3,7 +3,7 @@
 
 #include "dr/FlexDR.h"
 
-#include <dst/JobMessage.h>
+#include <sys/stat.h>
 
 #include <algorithm>
 #include <atomic>
@@ -38,11 +38,14 @@
 #include "db/obj/frShape.h"
 #include "db/obj/frVia.h"
 #include "distributed/RoutingJobDescription.h"
+#include "distributed/drUpdate.h"
 #include "distributed/frArchive.h"
 #include "dr/AbstractDRGraphics.h"
 #include "dr/FlexDR_conn.h"
+#include "drt/TritonRoute.h"
 #include "dst/BalancerJobDescription.h"
 #include "dst/Distributed.h"
+#include "dst/JobMessage.h"
 #include "frBaseTypes.h"
 #include "frDesign.h"
 #include "frProfileTask.h"
@@ -691,8 +694,8 @@ void FlexDR::reportIterationViolations() const
       }
     }
   }
-  if ((router_cfg_->DRC_RPT_ITER_STEP && iter_ > 0
-       && iter_ % router_cfg_->DRC_RPT_ITER_STEP.value() == 0)
+  if ((router_cfg_->DRC_RPT_ITER_STEP > 0 && iter_ > 0
+       && iter_ % router_cfg_->DRC_RPT_ITER_STEP == 0)
       || logger_->debugCheck(DRT, "autotuner", 1)
       || logger_->debugCheck(DRT, "report", 1)) {
     router_->reportDRC(

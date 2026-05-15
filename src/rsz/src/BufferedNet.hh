@@ -7,10 +7,10 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <type_traits>
 
 #include "odb/geom.h"
 #include "spdlog/fmt/fmt.h"
-#include "sta/Corner.hh"
 #include "sta/Delay.hh"
 #include "sta/Liberty.hh"
 #include "sta/MinMax.hh"
@@ -25,7 +25,6 @@ class EstimateParasitics;
 namespace rsz {
 
 class Resizer;
-class RepairSetup;
 
 class BufferedNet;
 using BufferedNetPtr = std::shared_ptr<BufferedNet>;
@@ -111,14 +110,14 @@ class BufferedNet
   BufferedNet(BufferedNetType type,
               const odb::Point& location,
               const sta::Pin* load_pin,
-              const sta::Corner* corner,
+              const sta::Scene* corner,
               const Resizer* resizer);
   // wire
   BufferedNet(BufferedNetType type,
               const odb::Point& location,
               int layer,
               const BufferedNetPtr& ref,
-              const sta::Corner* corner,
+              const sta::Scene* corner,
               const Resizer* resizer,
               const est::EstimateParasitics* estimate_parasitics);
   // via
@@ -127,7 +126,7 @@ class BufferedNet
               int layer,
               int ref_layer,
               const BufferedNetPtr& ref,
-              const sta::Corner* corner,
+              const sta::Scene* corner,
               const Resizer* resizer);
   // junc
   BufferedNet(BufferedNetType type,
@@ -140,7 +139,7 @@ class BufferedNet
               const odb::Point& location,
               sta::LibertyCell* buffer_cell,
               const BufferedNetPtr& ref,
-              const sta::Corner* corner,
+              const sta::Scene* corner,
               const Resizer* resizer,
               const est::EstimateParasitics* estimate_parasitics);
   std::string to_string(const Resizer* resizer) const;
@@ -162,14 +161,14 @@ class BufferedNet
   const sta::Pin* loadPin() const { return load_pin_; }
   // wire
   int length() const;
-  void wireRC(const sta::Corner* corner,
+  void wireRC(const sta::Scene* corner,
               const Resizer* resizer,
               const est::EstimateParasitics* estimate_parasitics,
               // Return values.
               double& res,
               double& cap);
   // via
-  double viaResistance(const sta::Corner* corner,
+  double viaResistance(const sta::Scene* corner,
                        const Resizer* resizer,
                        const est::EstimateParasitics* estimate_parasitics);
   // wire, via
@@ -248,12 +247,15 @@ class BufferedNet
 
   Metrics metrics() const
   {
-    return Metrics{
-        maxLoadWireLength(), slack(), cap(), maxLoadSlew(), fanout()};
+    return Metrics{.max_load_wl = maxLoadWireLength(),
+                   .slack = slack(),
+                   .cap = cap(),
+                   .max_load_slew = maxLoadSlew(),
+                   .fanout = fanout()};
   }
 
   bool fitsEnvelope(Metrics target);
-  const sta::Corner* corner() { return corner_; }
+  const sta::Scene* corner() { return corner_; }
 
  private:
   BufferedNetType type_;
@@ -293,7 +295,40 @@ class BufferedNet
   // Delay from driver pin to here
   FixedDelay arrival_delay_ = FixedDelay::ZERO;
 
-  const sta::Corner* corner_ = nullptr;
+  const sta::Scene* corner_ = nullptr;
 };
+
+// Template magic to make it easier to write algorithms descending
+// over the buffer tree in the form of lambdas; it allows recursive
+// lambda calling and it keeps track of the level number which is important
+// for good debug prints
+//
+// https://stackoverflow.com/questions/2067988/how-to-make-a-recursive-lambda
+template <class F>
+struct visitor
+{
+  F f;
+  int level = 0;
+  explicit visitor(F&& f) : f(std::forward<F>(f)) {}
+  template <class... Args>
+  decltype(auto) operator()(Args&&... args)
+  {
+    level++;
+    decltype(auto) ret = f(*this, level, std::forward<Args>(args)...);
+    level--;
+    return ret;
+  }
+
+  // delete the copy constructor
+  visitor(const visitor&) = delete;
+  visitor& operator=(const visitor&) = delete;
+};
+
+template <typename F, class... Args>
+static decltype(auto) visitTree(F&& f, Args&&... args)
+{
+  visitor<std::decay_t<F>> v{std::forward<F>(f)};
+  return v(std::forward<Args>(args)...);
+}
 
 }  // namespace rsz

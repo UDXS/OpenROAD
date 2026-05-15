@@ -3,12 +3,15 @@
 
 #include <set>
 #include <string>
+#include <vector>
 
 #include "db_sta/dbNetwork.hh"
 #include "db_sta/dbSta.hh"
 #include "gtest/gtest.h"
+#include "odb/PtrSetMap.h"
 #include "odb/db.h"
 #include "odb/dbObject.h"
+#include "odb/dbTypes.h"
 #include "tst/IntegratedFixture.h"
 #include "utl/Logger.h"
 
@@ -18,7 +21,7 @@ class TestInsertBuffer : public tst::IntegratedFixture
 {
  public:
   TestInsertBuffer()
-      : tst::IntegratedFixture(tst::IntegratedFixture::Technology::Nangate45,
+      : tst::IntegratedFixture(tst::IntegratedFixture::Technology::kNangate45,
                                "_main/src/rsz/test/")
   {
     if (debug_) {
@@ -603,7 +606,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case1)
 
   // Find load pin for buffer insertion
   dbITerm* buf0_a = buf0_inst->findITerm("A");
-  std::set<dbObject*> loads;
+  odb::PtrSet<dbObject> loads;
   loads.insert(buf0_a);
 
   // Insert buffer
@@ -660,13 +663,13 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case2)
 
   // Insert buffer 1
   dbITerm* buf0_a = buf0_inst->findITerm("A");
-  std::set<dbObject*> loads1;
+  odb::PtrSet<dbObject> loads1;
   loads1.insert(buf0_a);
   dbInst* new_buf1 = n1->insertBufferBeforeLoads(loads1, buffer_master);
   ASSERT_TRUE(new_buf1);
 
   // Insert buffer 2
-  std::set<dbObject*> loads2;
+  odb::PtrSet<dbObject> loads2;
   loads2.insert(out_port);
   dbInst* new_buf2 = n2->insertBufferBeforeLoads(loads2, buffer_master);
   ASSERT_TRUE(new_buf2);
@@ -755,14 +758,14 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case3)
   // Insert buffer 1
   dbITerm* buf0_a = mod0_module->findDbInst("buf0")->findITerm("A");
   ASSERT_TRUE(buf0_a);
-  std::set<dbObject*> loads1;
+  odb::PtrSet<dbObject> loads1;
   loads1.insert(buf0_a);
   dbInst* new_buf1 = buf0_a->getNet()->insertBufferBeforeLoads(
       loads1, buffer_master, nullptr, "new_buf1");
   ASSERT_TRUE(new_buf1);
 
   // Insert buffer 2
-  std::set<dbObject*> loads2;
+  odb::PtrSet<dbObject> loads2;
   loads2.insert(out_port);
   dbInst* new_buf2 = out_port->getNet()->insertBufferBeforeLoads(
       loads2, buffer_master, nullptr, "new_buf2");
@@ -827,7 +830,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case4)
   // Insert buffer 1
   dbITerm* load0_a = load0->findITerm("A");
   dbITerm* load1_a = load1->findITerm("A");
-  std::set<dbObject*> loads1;
+  odb::PtrSet<dbObject> loads1;
   loads1.insert(load0_a);
   loads1.insert(load1_a);
   dbInst* new0
@@ -837,7 +840,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case4)
   // Insert buffer 2
   dbITerm* new0_a = new0->findITerm("A");
   dbITerm* load2_a = load2->findITerm("A");
-  std::set<dbObject*> loads2;
+  odb::PtrSet<dbObject> loads2;
   loads2.insert(new0_a);
   loads2.insert(load2_a);
   dbInst* new1
@@ -934,7 +937,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case5)
   dbITerm* load1_a = mod2->findDbInst("load1")->findITerm("A");
   ASSERT_TRUE(load1_a);
 
-  std::set<dbObject*> loads1;
+  odb::PtrSet<dbObject> loads1;
   loads1.insert(load0_a);
   loads1.insert(load1_a);
   dbInst* new0
@@ -947,7 +950,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case5)
   dbITerm* load2_a = mod3->findDbInst("load2")->findITerm("A");
   ASSERT_TRUE(load2_a);
 
-  std::set<dbObject*> loads2;
+  odb::PtrSet<dbObject> loads2;
   loads2.insert(new0_a);
   loads2.insert(load2_a);
   dbInst* new1
@@ -1065,7 +1068,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case6)
   // Insert buffer
   // - Targets: load5 (in H2/H1), load2 (in H3), load3 (in H4/H5)
   //----------------------------------------------------
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load5_a);
   targets.insert(load2_a);
   targets.insert(load3_a);
@@ -1233,7 +1236,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case7)
   // Insert buffer
   // - Targets: load4 (Top), load2 (H1), load3 (H2/H3)
   //----------------------------------------------------
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load4_a);
   targets.insert(load2_a);
   targets.insert(load3_a);
@@ -1340,7 +1343,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case8)
   load1_a->connect(n1);
 
   // Insert Buffer
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load1_a);
   dbInst* new_buf
       = n1->insertBufferBeforeLoads(targets, buffer_master, nullptr, "new_buf");
@@ -1393,7 +1396,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case9)
   drvr_z->connect(n1);
 
   // Insert Buffer
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(out_port);
   dbInst* new_buf
       = n1->insertBufferBeforeLoads(targets, buffer_master, nullptr, "new_buf");
@@ -1440,7 +1443,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case10)
   out_port->setIoType(dbIoType::OUTPUT);
 
   // Insert Buffer
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(out_port);
   dbInst* new_buf
       = n1->insertBufferBeforeLoads(targets, buffer_master, nullptr, "new_buf");
@@ -1495,7 +1498,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case11)
   load2_a->connect(n1);
 
   // Insert Buffer for load1 only
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load1_a);
   dbInst* new_buf
       = n1->insertBufferBeforeLoads(targets, buffer_master, nullptr, "new_buf");
@@ -1551,7 +1554,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case12)
   load1_a->connect(n1);
 
   // Insert Buffer for both
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load1_a);
   targets.insert(out_port);
   dbInst* new_buf
@@ -1607,7 +1610,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case13)
   ASSERT_NE(n1, nullptr);
 
   // Targets
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load1_a);   // Leaf on top
   targets.insert(out_port);  // Output Port
   targets.insert(load2_a);   // Hierarchical Leaf
@@ -1680,7 +1683,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case14)
   writeAndCompareVerilogOutputFile(test_name, test_name + "_pre.v");
 
   // 2. Insert Buffer
-  std::set<dbObject*> loads;
+  odb::PtrSet<dbObject> loads;
   loads.insert(load1_inst->findITerm("A"));
   loads.insert(load2_inst->findITerm("A"));
 
@@ -1766,7 +1769,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case15)
   // Insert buffer
   // - Targets: load1, u1/load2, u1/load3
   //----------------------------------------------------
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load1_a);
   targets.insert(u1_load2_a);
   targets.insert(u1_load3_a);
@@ -1910,7 +1913,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case16)
   // Insert buffer
   // - Targets: load0, h0/load1
   //----------------------------------------------------
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load0_a);
   targets.insert(h0_load1_a);
 
@@ -1981,7 +1984,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case17)
   // - Targets: load0, h0/load1
   // - Note that the two loads are on different dbNets.
   //----------------------------------------------------
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load0_a);
   targets.insert(h0_load1_a);
 
@@ -2062,7 +2065,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case18)
   // - Targets: load0, h0/load1
   // - Note that the two loads are on different dbNets.
   //----------------------------------------------------
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load0_a);
   targets.insert(h0_load1_a);
 
@@ -2163,7 +2166,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case19)
   // - Targets: load0, h0/mem/w_mask_in[2:0]
   // - Note that the two loads are on different dbNets.
   //----------------------------------------------------
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load0_a);
   targets.insert(h0_mem_w_mask_in0);
   targets.insert(h0_mem_w_mask_in1);
@@ -2254,7 +2257,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case20)
   // - Targets: load0, h0/mem/w_mask_in[2:0]
   // - Note that the two loads are on different dbNets.
   //----------------------------------------------------
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(h0_load0_a);
   targets.insert(h0_h1_load1_a);
   targets.insert(h2_mem_we_in);
@@ -2332,7 +2335,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case21)
   // - Targets: h1/h2/load0, h3/load1, h3/load2
   // - Note that the two loads are on different dbNets.
   //----------------------------------------------------
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(h1_h2_load0_a);
   targets.insert(h3_load1_a);
   targets.insert(h3_load2_a);
@@ -2403,7 +2406,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case22)
   // Insert buffer
   // - Targets: load_internal_a, load_exec_a
   //----------------------------------------------------
-  std::set<dbObject*> loads;
+  odb::PtrSet<dbObject> loads;
   loads.insert(load_internal_a);
   loads.insert(load_exec_a);
 
@@ -2472,7 +2475,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case23)
   // Insert buffer
   // - Targets: load_a
   //----------------------------------------------------
-  std::set<dbObject*> loads;
+  odb::PtrSet<dbObject> loads;
   loads.insert(load_a);
 
   dbInst* new_buf
@@ -2555,7 +2558,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case24)
   // - "n1" is created first and has all the connections at first.
   // - "w1" is created later and takes over all the connections.
   // - "n1" has no connection at the end.
-  EXPECT_EQ(std::string(target_net->getConstName()), "w1");
+  EXPECT_EQ(std::string(target_net->getConstName()), "n1");
 
   dbModNet* modnet_n1 = block_->findModNet("n1");
   ASSERT_NE(modnet_n1, nullptr);
@@ -2580,9 +2583,9 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case24)
   ASSERT_EQ(modnet_h0_out, nullptr);
 
   // Verify we have multiple modnets in target module for this flat net
-  std::set<dbModNet*> related_modnets;
+  odb::PtrSet<odb::dbModNet> related_modnets;
   target_net->findRelatedModNets(related_modnets);
-  std::set<dbModNet*> modnets_in_top;
+  odb::PtrSet<odb::dbModNet> modnets_in_top;
   dbModule* top_module = block_->getTopModule();
   for (dbModNet* modnet : related_modnets) {
     if (modnet->getParent() == top_module) {
@@ -2596,7 +2599,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case24)
   sta_->updateTiming(true);
   num_warning = db_network_->checkAxioms();
   num_warning += sta_->checkSanity();
-  EXPECT_EQ(num_warning, 1);  // 'n1' is dangling
+  EXPECT_EQ(num_warning, 0);
 
   //----------------------------------------------------
   // Insert buffer
@@ -2606,7 +2609,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case24)
   // - The fix ensures buffer input connects to driver's modnet ('n1'),
   //   not the load's modnet ('w1')
   //----------------------------------------------------
-  std::set<dbObject*> loads;
+  odb::PtrSet<dbObject> loads;
   loads.insert(h0_internal_buf_a);
   loads.insert(h1_internal_load_a);
 
@@ -2635,7 +2638,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case24)
   // Post sanity check - this was failing with ORD-2030 before the fix
   num_warning = db_network_->checkAxioms();
   num_warning += sta_->checkSanity();
-  EXPECT_EQ(num_warning, 3);
+  EXPECT_EQ(num_warning, 0);
 
   // Write verilog and check the content
   writeAndCompareVerilogOutputFile(test_name, test_name + "_post.v");
@@ -2690,7 +2693,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case25)
   //----------------------------------------------------
   // Insert buffer
   //----------------------------------------------------
-  std::set<dbObject*> loads;
+  odb::PtrSet<dbObject> loads;
   loads.insert(h0_load0_a);
   loads.insert(load1_a);
 
@@ -2761,7 +2764,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case26)
   //----------------------------------------------------
   // Insert buffer
   //----------------------------------------------------
-  std::set<dbObject*> loads;
+  odb::PtrSet<dbObject> loads;
   loads.insert(h1_load0_a);
   loads.insert(h1_load1_a);
 
@@ -2819,7 +2822,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case27)
   EXPECT_EQ(num_warning, 0);
 
   // Insert buffer before load1/A
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load1_a);
 
   dbInst* new_buf = target_net->insertBufferBeforeLoads(
@@ -2899,7 +2902,7 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case28)
   // Buffer output will need to punch a port into H1 to reach load1.
   // Since H1 already has internal net "h1/_019_", the punched port name
   // should be renamed to avoid collision (e.g., "_019__0")
-  std::set<dbObject*> targets;
+  odb::PtrSet<dbObject> targets;
   targets.insert(load1_a);
   targets.insert(load4_a);
 
@@ -2918,8 +2921,16 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case28)
   ASSERT_NE(internal_net_after, nullptr);
   EXPECT_EQ(internal_net, internal_net_after);
 
-  // Verify that a new port "_019__0" is created in H1 to avoid collision
-  dbModBTerm* punched_port = mod_h1->findModBTerm("_019__0");
+  // Verify that a new port is created in H1 to avoid collision with "_019_".
+  // The exact suffix depends on the global uniquify counter.
+  dbModBTerm* punched_port = nullptr;
+  for (dbModBTerm* bterm : mod_h1->getModBTerms()) {
+    std::string bname = bterm->getName();
+    if (bname.substr(0, 5) == "_019_" && bname != "_019_") {
+      punched_port = bterm;
+      break;
+    }
+  }
   ASSERT_NE(punched_port, nullptr);
   EXPECT_EQ(punched_port->getIoType(), dbIoType::INPUT);
 
@@ -2928,6 +2939,435 @@ TEST_F(TestInsertBuffer, BeforeLoads_Case28)
   num_warning += sta_->checkSanity();
   EXPECT_EQ(num_warning, 0);
 
+  writeAndCompareVerilogOutputFile(test_name, test_name + "_post.v");
+}
+
+// Test case for ORD-2030 ERROR by insertBufferBeforeLoads()
+TEST_F(TestInsertBuffer, BeforeLoads_Case29)
+{
+  // Get the test name dynamically from the gtest framework.
+  const auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
+  const std::string test_name
+      = std::string(test_info->test_suite_name()) + "_" + test_info->name();
+
+  int num_warning = 0;
+
+  // Read verilog
+  readVerilogAndSetup(test_name + "_pre.v");
+
+  // Get ODB objects
+  dbMaster* buffer_master = db_->findMaster("BUF_X4");
+  ASSERT_TRUE(buffer_master);
+
+  // Target net
+  dbNet* target_net = block_->findNet("n1");
+  ASSERT_NE(target_net, nullptr);
+
+  // Top module
+  dbModule* top_mod = block_->getTopModule();
+  ASSERT_NE(top_mod, nullptr);
+
+  // load0 in top module
+  dbInst* load0 = block_->findInst("load0");
+  ASSERT_NE(load0, nullptr);
+  dbITerm* load0_a = load0->findITerm("A");
+  ASSERT_NE(load0_a, nullptr);
+
+  // H1 module and its loads
+  dbModule* mod_h0 = block_->findModule("H0");
+  ASSERT_NE(mod_h0, nullptr);
+  dbInst* load1 = block_->findInst("h0/load1");
+  ASSERT_NE(load1, nullptr);
+  dbITerm* load1_a = load1->findITerm("A");
+  ASSERT_NE(load1_a, nullptr);
+
+  dbModNet* modnet_n1 = block_->findModNet("n1");
+  ASSERT_NE(modnet_n1, nullptr);
+
+  // Pre sanity check
+  sta_->updateTiming(true);
+  num_warning = db_network_->checkAxioms();
+  num_warning += sta_->checkSanity();
+  EXPECT_EQ(num_warning, 0);
+
+  // Insert buffer before load1/A (in H1) AND load0/A (in top)
+  odb::PtrSet<dbObject> targets;
+  targets.insert(load0_a);
+  targets.insert(load1_a);
+
+  dbInst* new_buf = target_net->insertBufferBeforeLoads(
+      targets, buffer_master, nullptr, "new_buf");
+  ASSERT_TRUE(new_buf);
+
+  //----------------------------------------------------
+  // Verify Results
+  //----------------------------------------------------
+  // Buffer should be placed in TOP module (LCA of load0 and load1)
+  EXPECT_EQ(new_buf->getModule(), top_mod);
+
+  // TODO: Dangling modnet "n1" is not removed
+  modnet_n1 = block_->findModNet("n1");
+  ASSERT_NE(modnet_n1, nullptr);
+
+  // Post sanity check
+  num_warning = db_network_->checkAxioms();
+  num_warning += sta_->checkSanity();
+  EXPECT_EQ(num_warning, 0);
+
+  writeAndCompareVerilogOutputFile(test_name, test_name + "_post.v");
+}
+
+// Reproduction of ORD-2030 bug using Verilog input
+// Fixed by preventing reuse of ModNets connected to Output/Inout ports.
+TEST_F(TestInsertBuffer, BeforeLoads_Case30)
+{
+  // Get the test name dynamically from the gtest framework.
+  const auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
+  const std::string test_name
+      = std::string(test_info->test_suite_name()) + "_" + test_info->name();
+
+  int num_warning = 0;
+
+  // Read verilog
+  readVerilogAndSetup(test_name + "_pre.v");
+
+  block_ = db_->getChip()->getBlock();
+  ASSERT_TRUE(block_);
+
+  // Find Flat Net
+  dbNet* flat_net = block_->findNet("ic_debug_addr_2");
+  ASSERT_TRUE(flat_net);
+
+  // Find Buffer Master
+  dbMaster* buffer_master = db_->findMaster("BUF_X1");
+  ASSERT_TRUE(buffer_master);
+
+  // Collect Load Pins
+  std::vector<dbObject*> load_pins;
+
+  // Top loads
+  std::vector<std::string> top_loads = {"u_2884",
+                                        "u_2885",
+                                        "u_2924",
+                                        "u_2961",
+                                        "u_2999",
+                                        "u_3034",
+                                        "u_3041",
+                                        "u_3048",
+                                        "u_3055"};
+  for (const auto& name : top_loads) {
+    dbInst* inst = block_->findInst(name.c_str());
+    ASSERT_TRUE(inst);
+    dbITerm* pin = inst->findITerm("A");
+    ASSERT_TRUE(pin);
+    load_pins.push_back(pin);
+  }
+
+  // Internal loads (swerv/ifu/...)
+  std::vector<std::string> internal_loads
+      = {"u_11044", "u_11045", "u_11046", "u_11047"};
+  for (const auto& name : internal_loads) {
+    std::string full_name = "swerv_inst/ifu/" + name;
+    dbInst* inst = block_->findInst(full_name.c_str());
+    ASSERT_TRUE(inst) << "Internal load " << full_name << " not found";
+    dbITerm* pin = inst->findITerm("A");
+    ASSERT_TRUE(pin);
+    load_pins.push_back(pin);
+  }
+
+  // Run insert_buffer
+  odb::dbInst* buf_inst
+      = flat_net->insertBufferBeforeLoads(load_pins, buffer_master, nullptr);
+
+  // Verify
+  ASSERT_TRUE(buf_inst);
+
+  sta_->updateTiming(true);
+  num_warning = db_network_->checkAxioms();
+  num_warning += sta_->checkSanity();
+
+  // Expect 1 warning for 'swerv_inst/dec_tlu/zero_' has no driver (from 1'b0
+  // connection)
+  EXPECT_LE(num_warning, 1);
+
+  // Write verilog and check the content
+  writeAndCompareVerilogOutputFile(test_name, test_name + "_post.v");
+}
+
+// Test case for hierarchical buffer insertion w/ loads_on_diff_nets=true
+TEST_F(TestInsertBuffer, BeforeLoads_Case31)
+{
+  const auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
+  const std::string test_name
+      = std::string(test_info->test_suite_name()) + "_" + test_info->name();
+
+  readVerilogAndSetup(test_name + "_pre.v");
+
+  int num_warning = 0;
+
+  // Find buffer master
+  dbMaster* buf_master = db_->findMaster("BUF_X4");
+  ASSERT_NE(buf_master, nullptr);
+
+  // Find the target net to insert a buffer
+  dbNet* target_net = block_->findNet("net5869");
+  ASSERT_NE(target_net, nullptr);
+
+  // Find the load pins
+  dbITerm* load0_a = block_->findITerm("swerv/ifu/_11393_/A");
+  ASSERT_NE(load0_a, nullptr);
+  dbITerm* load1_a = block_->findITerm("swerv/ifu/_11394_/A");
+  ASSERT_NE(load1_a, nullptr);
+
+  // Pre sanity check
+  sta_->updateTiming(true);
+  num_warning = db_network_->checkAxioms();
+  num_warning += sta_->checkSanity();
+  EXPECT_EQ(num_warning, 0);
+
+  // Prepare load set - only loads on net848 (hierarchical loads in swerv/ifu)
+  odb::PtrSet<dbObject> load_pins;
+  load_pins.insert(load0_a);
+  load_pins.insert(load1_a);
+
+  // Insert buffer before the hierarchical loads
+  dbInst* buf_inst
+      = target_net->insertBufferBeforeLoads(load_pins,
+                                            buf_master,
+                                            nullptr,
+                                            "new_buf",
+                                            nullptr,
+                                            dbNameUniquifyType::IF_NEEDED,
+                                            true);
+  ASSERT_NE(buf_inst, nullptr);
+
+  // Post sanity check
+  num_warning = db_network_->checkAxioms();
+  num_warning += sta_->checkSanity();
+  EXPECT_EQ(num_warning, 0);
+
+  // Write verilog and check the content
+  writeAndCompareVerilogOutputFile(test_name, test_name + "_post.v");
+}
+
+// Test case for hierarchical buffer insertion w/ loads_on_diff_nets=true
+// Reproduction of a crash when a load pin is not connected to any net.
+TEST_F(TestInsertBuffer, BeforeLoads_Case32)
+{
+  const auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
+  const std::string test_name
+      = std::string(test_info->test_suite_name()) + "_" + test_info->name();
+
+  readVerilogAndSetup(test_name + "_pre.v");
+
+  int num_warning = 0;
+
+  // Find buffer master
+  dbMaster* buf_master = db_->findMaster("BUF_X4");
+  ASSERT_NE(buf_master, nullptr);
+
+  // Find the target net to insert a buffer
+  dbNet* target_net = block_->findNet("net5869");
+  ASSERT_NE(target_net, nullptr);
+
+  // Find the load pins
+  dbITerm* load0_a = block_->findITerm("swerv/ifu/_11393_/A");
+  ASSERT_NE(load0_a, nullptr);
+  dbITerm* load1_a = block_->findITerm("swerv/_11394_/A");
+  ASSERT_NE(load1_a, nullptr);
+
+  // Pre sanity check
+  sta_->updateTiming(true);
+  // "swerv/ifu/_11393_/A" is not connected intentionally for test.
+  // Thus, checkAxioms() should not be called.
+  // num_warning = db_network_->checkAxioms();
+  num_warning = sta_->checkSanity();
+  EXPECT_EQ(num_warning, 0);
+
+  // Prepare load set
+  odb::PtrSet<dbObject> load_pins;
+  load_pins.insert(load0_a);
+  load_pins.insert(load1_a);
+
+  // Insert buffer before the hierarchical loads
+  dbInst* buf_inst
+      = target_net->insertBufferBeforeLoads(load_pins,
+                                            buf_master,
+                                            nullptr,
+                                            "new_buf",
+                                            nullptr,
+                                            dbNameUniquifyType::IF_NEEDED,
+                                            true);
+  ASSERT_NE(buf_inst, nullptr);
+
+  // Post sanity check
+  num_warning = db_network_->checkAxioms();
+  num_warning += sta_->checkSanity();
+  EXPECT_EQ(num_warning, 0);
+
+  // Write verilog and check the content
+  writeAndCompareVerilogOutputFile(test_name, test_name + "_post.v");
+}
+
+// Reproduce the real bug: remove_buffers + insertBufferBeforeLoad
+// on a hierarchical design.
+//
+// Synthesis creates a submodule (MOD0) with two output ports:
+//   MOD0: LOGIC0_X1 drvr -> Z_a, BUF_X1 cross_buf: Z_a -> Z_b
+// At the top level:
+//   MOD0 mod0 (.Z_a(port_a), .Z_b(port_b))
+//
+// The cross_buf connects two port-named nets (port_a and port_b).
+// remove_buffers removes it, merging port_b into port_a.
+// BTerm port_b ends up on net port_a — name mismatch.
+//
+// Then insertBufferBeforeLoad inserts a buffer before port_b.
+// Without the fix, createNewFlatNet gives the new net a generic name,
+// and write_verilog produces:
+//   MOD0 mod0 (.Z_a(port_a), .Z_b(port_b));  -- submodule drives port_b
+//   assign port_b = net1;                     -- assign also drives port_b
+// This is a multi-driver on port_b, rejected by Kepler LEC.
+TEST_F(TestInsertBuffer, BeforeLoads_Case33)
+{
+  const auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
+  const std::string test_name
+      = std::string(test_info->test_suite_name()) + "_" + test_info->name();
+
+  readVerilogAndSetup(test_name + "_pre.v");
+
+  dbMaster* buf_x4_master = db_->findMaster("BUF_X4");
+  ASSERT_NE(buf_x4_master, nullptr);
+
+  // Verify initial state: BTerm port_b matches its net name
+  dbBTerm* bterm_b = block_->findBTerm("port_b");
+  ASSERT_NE(bterm_b, nullptr);
+  EXPECT_STREQ(bterm_b->getConstName(), bterm_b->getNet()->getConstName());
+
+  // --- Step 1: remove_buffers (reproduces the real flow) ---
+  // Removes cross_buf that connects port_a -> port_b.
+  // Both nets have BTerms, so survivor = input net (port_a).
+  // BTerm port_b moves to net port_a — name mismatch.
+  resizer_.removeBuffers({});
+
+  EXPECT_EQ(block_->findInst("cross_buf"), nullptr)
+      << "cross_buf should have been removed by remove_buffers";
+  EXPECT_STREQ(bterm_b->getNet()->getConstName(), "port_a")
+      << "After remove_buffers, BTerm port_b should be on net port_a "
+         "(name mismatch)";
+
+  // --- Step 2: insertBufferBeforeLoad on port_b (reproduces buffer_ports) ---
+  dbNet* target_net = bterm_b->getNet();
+  dbInst* new_buf = target_net->insertBufferBeforeLoad(
+      bterm_b, buf_x4_master, nullptr, "output");
+  ASSERT_NE(new_buf, nullptr);
+
+  // The buffer output net must be named "port_b" — not a generic name.
+  // Without the fix, createNewFlatNet produces "net1" because
+  // bterm_name ("port_b") != net_name ("port_a"), skipping the rename.
+  // This causes write_verilog to emit a spurious assign statement,
+  // and in hierarchical designs, creates a multi-driver because the
+  // submodule port map still references port_b.
+  dbNet* buf_out_net = new_buf->findITerm("Z")->getNet();
+  ASSERT_NE(buf_out_net, nullptr);
+  EXPECT_EQ(bterm_b->getNet(), buf_out_net);
+  EXPECT_STREQ(buf_out_net->getConstName(), "port_b")
+      << "Buffer output net must be named after the BTerm (port_b), "
+         "not a generic name. Without the fix, this would be 'net1' "
+         "and write_verilog would emit 'assign port_b = net1;'";
+
+  // Write verilog and compare
+  writeAndCompareVerilogOutputFile(test_name, test_name + "_post.v");
+}
+
+// Bug reproduction: makeNewNetName only checks flat net uniqueness, not
+// ModNet or ModBTerm names. In a hierarchical design, a submodule port
+// named "net" creates a ModBTerm/ModNet "net" in the module. The
+// corresponding flat net has a different hierarchical name (from the
+// parent's connection). insertBufferBeforeLoads with IF_NEEDED uniquify
+// creates flat net "sub0/net" whose base name "net" collides with the
+// existing ModBTerm/ModNet "net", producing invalid emitted Verilog.
+//
+// Root cause from sky130hd/microwatt CTS LEC failure:
+//   SplitLoadMove calls insertBufferBeforeLoads with nullptr net base name
+//   and IF_NEEDED uniquify. createNewFlatNet defaults to "net" base name.
+//   makeNewNetName(parent, "net", IF_NEEDED) only checks findNet(), missing
+//   the existing ModNet/ModBTerm "net" in the target module.
+TEST_F(TestInsertBuffer, BeforeLoads_Case34)
+{
+  const auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
+  const std::string test_name
+      = std::string(test_info->test_suite_name()) + "_" + test_info->name();
+
+  int num_warning = 0;
+  readVerilogAndSetup(test_name + "_pre.v");
+
+  dbMaster* buf_x4_master = db_->findMaster("BUF_X4");
+  ASSERT_NE(buf_x4_master, nullptr);
+
+  // Verify initial state: module SUB has ModBTerm "net" (output port)
+  dbModule* sub_mod = block_->findModule("SUB");
+  ASSERT_NE(sub_mod, nullptr);
+  EXPECT_NE(sub_mod->findModBTerm("net"), nullptr)
+      << "SUB should have ModBTerm 'net' (output port)";
+  EXPECT_NE(sub_mod->getModNet("net"), nullptr)
+      << "SUB should have ModNet 'net' (port connection)";
+
+  // The flat net for the "net" port comes from the parent's connection,
+  // so there is no flat net named "sub0/net". This naturally occurs in
+  // hierarchical designs where the flat net name is determined by the
+  // parent module's wire name, not the child module's port name.
+  EXPECT_EQ(block_->findNet("sub0/net"), nullptr)
+      << "No flat net named 'sub0/net' should exist; the port's flat net "
+         "has the parent's wire name";
+
+  // Pre sanity check
+  sta_->updateTiming(true);
+  num_warning = db_network_->checkAxioms();
+  num_warning += sta_->checkSanity();
+  EXPECT_EQ(num_warning, 0);
+
+  // Find the flat net that drives the "net" port in SUB
+  dbITerm* drv_z = block_->findITerm("sub0/drv/Z");
+  ASSERT_NE(drv_z, nullptr);
+  dbNet* orig_net = drv_z->getNet();
+  ASSERT_NE(orig_net, nullptr);
+
+  // Insert buffer before load2 (reproduces SplitLoadMove code path:
+  // new_buf_base_name="split", new_net_base_name=nullptr, IF_NEEDED)
+  dbITerm* load2_a = block_->findITerm("sub0/load2/A");
+  ASSERT_NE(load2_a, nullptr);
+
+  odb::PtrSet<dbObject> load_pins;
+  load_pins.insert(load2_a);
+
+  dbInst* new_buf
+      = orig_net->insertBufferBeforeLoads(load_pins,
+                                          buf_x4_master,
+                                          nullptr,
+                                          "split",
+                                          nullptr,
+                                          dbNameUniquifyType::IF_NEEDED,
+                                          false);
+  ASSERT_NE(new_buf, nullptr);
+
+  // Post sanity check - detects flat net / ModNet name collision
+  num_warning = db_network_->checkAxioms();
+  num_warning += sta_->checkSanity();
+  EXPECT_EQ(num_warning, 0);
+
+  // Key assertion: the buffer output net must NOT have base name "net"
+  // because the module already has a ModBTerm/ModNet "net".
+  // Without the fix, makeNewNetName only checks flat nets, creating
+  // a flat net "sub0/net" that collides with the existing ModBTerm "net"
+  // → duplicate "wire net;" in emitted Verilog.
+  dbNet* buf_out_net = new_buf->findITerm("Z")->getNet();
+  ASSERT_NE(buf_out_net, nullptr);
+  EXPECT_STRNE(block_->getBaseName(buf_out_net->getConstName()), "net")
+      << "New flat net base name must not collide with existing ModBTerm "
+         "'net'. Without the fix, makeNewNetName misses ModNet/ModBTerm "
+         "checks, causing duplicate wire declarations in emitted Verilog.";
+
+  // Write verilog and compare
   writeAndCompareVerilogOutputFile(test_name, test_name + "_post.v");
 }
 

@@ -336,10 +336,7 @@ const char* dbInst::getConstName() const
 bool dbInst::isNamed(const char* name)
 {
   _dbInst* inst = (_dbInst*) this;
-  if (!strcmp(inst->name_, name)) {
-    return true;
-  }
-  return false;
+  return strcmp(inst->name_, name) == 0;
 }
 
 bool dbInst::rename(const char* name)
@@ -363,10 +360,15 @@ bool dbInst::rename(const char* name)
     block->journal_->updateField(this, _dbInst::kName, inst->name_, name);
   }
 
+  std::string old_name(inst->name_);
   block->inst_hash_.remove(inst);
   free((void*) inst->name_);
   inst->name_ = safe_strdup(name);
   block->inst_hash_.insert(inst);
+
+  for (dbBlockCallBackObj* cb : block->callbacks_) {
+    cb->inDbPostInstRename(this, old_name.c_str());
+  }
 
   return true;
 }
@@ -878,7 +880,47 @@ dbBox* dbInst::getHalo()
 
   _dbBlock* block = (_dbBlock*) inst->getOwner();
   _dbBox* b = block->box_tbl_->getPtr(inst->halo_);
+
   return (dbBox*) b;
+}
+
+Rect dbInst::getTransformedHalo()
+{
+  _dbInst* inst = (_dbInst*) this;
+  Rect halo = Rect();
+
+  if (inst->halo_ == 0) {
+    return halo;
+  }
+
+  _dbBlock* block = (_dbBlock*) inst->getOwner();
+  _dbBox* b = block->box_tbl_->getPtr(inst->halo_);
+
+  Rect rect = b->shape_.rect;
+  dbTransform transform(inst->flags_.orient, Point(0, 0));
+
+  transform.apply(rect);
+
+  int x1 = std::abs(std::min(rect.xMin(), rect.xMax()));
+  int y1 = std::abs(std::min(rect.yMin(), rect.yMax()));
+  int x2 = std::abs(std::max(rect.xMin(), rect.xMax()));
+  int y2 = std::abs(std::max(rect.yMin(), rect.yMax()));
+
+  halo.reset(x1, y1, x2, y2);
+
+  return halo;
+}
+
+void dbInst::setHalo(int left, int bottom, int right, int top, bool is_soft)
+{
+  dbBox* halo = getHalo();
+
+  if (halo != nullptr) {
+    dbBox::destroy(halo);
+  }
+
+  halo = dbBox::create(this, left, bottom, right, top);
+  halo->setSoft(is_soft);
 }
 
 void dbInst::getConnectivity(std::vector<dbInst*>& result,
@@ -1178,6 +1220,13 @@ bool dbInst::swapMaster(dbMaster* new_master_)
     return false;
   }
 
+  // Clear preferred APs before the ITerms are remapped to the new master.
+  for (const uint32_t iterm_id : inst->iterms_) {
+    dbITerm* iterm = (dbITerm*) block->iterm_tbl_->getPtr(iterm_id);
+    iterm->clearPrefAccessPoints();
+  }
+  inst->pin_access_idx_ = -1;
+
   // remove reference to inst_hdr
   _dbInstHdr* old_inst_hdr
       = block->inst_hdr_hash_.find(((_dbMaster*) old_master_)->id_);
@@ -1206,14 +1255,17 @@ bool dbInst::swapMaster(dbMaster* new_master_)
 
   // The next two steps invalidates any dbSet<dbITerm> iterators.
 
-  // 1) update the iterm-mterm-idx
+  // 1) update the iterm-mterm-idx and cached mterm pointer
+  _dbMaster* new_master = (_dbMaster*) new_master_;
   uint32_t cnt = inst->iterms_.size();
 
   uint32_t i;
   for (i = 0; i < cnt; ++i) {
     _dbITerm* it = block->iterm_tbl_->getPtr(inst->iterms_[i]);
     uint32_t old_idx = it->flags_.mterm_idx;
-    it->flags_.mterm_idx = idx_map[old_idx];
+    uint32_t new_idx = idx_map[old_idx];
+    it->flags_.mterm_idx = new_idx;
+    it->mterm_ = new_master->mterm_tbl_->getPtr(new_inst_hdr->mterms_[new_idx]);
   }
 
   // 2) reorder the iterms vector
@@ -1306,6 +1358,7 @@ dbInst* dbInst::create(dbBlock* block_,
     inst_impl->iterms_[i] = iterm->getOID();
     iterm->flags_.mterm_idx = i;
     iterm->inst_ = inst_impl->getOID();
+    iterm->mterm_ = master->mterm_tbl_->getPtr(inst_hdr->mterms_[i]);
   }
 
   _dbBox* box = block->box_tbl_->create();
@@ -1320,7 +1373,7 @@ dbInst* dbInst::create(dbBlock* block_,
 
   // Add the new instance to the parent module.
   bool parent_is_top = parent_module == nullptr || parent_module->isTop();
-  if (physical_only == false || parent_is_top) {
+  if (!physical_only || parent_is_top) {
     if (parent_module) {
       parent_module->addInst((dbInst*) inst_impl);
     } else {
@@ -1330,13 +1383,9 @@ dbInst* dbInst::create(dbBlock* block_,
 
   if (region) {
     region->addInst((dbInst*) inst_impl);
-    for (dbBlockCallBackObj* cb : block->callbacks_) {
-      cb->inDbInstCreate((dbInst*) inst_impl, region);
-    }
-  } else {
-    for (dbBlockCallBackObj* cb : block->callbacks_) {
-      cb->inDbInstCreate((dbInst*) inst_impl);
-    }
+  }
+  for (dbBlockCallBackObj* cb : block->callbacks_) {
+    cb->inDbInstCreate((dbInst*) inst_impl);
   }
 
   for (int i = 0; i < mterm_cnt; ++i) {
@@ -1464,16 +1513,7 @@ void dbInst::destroy(dbInst* inst_)
     _dbITerm* _iterm = block->iterm_tbl_->getPtr(id);
     dbITerm* iterm = (dbITerm*) _iterm;
     iterm->disconnect();
-    if (inst_->getPinAccessIdx() >= 0) {
-      for (const auto& [pin, aps] : iterm->getAccessPoints()) {
-        for (auto ap : aps) {
-          _dbAccessPoint* _ap = (_dbAccessPoint*) ap;
-          auto [first, last] = std::ranges::remove_if(
-              _ap->iterms_, [id](const auto& id_in) { return id_in == id; });
-          _ap->iterms_.erase(first, last);
-        }
-      }
-    }
+    iterm->clearPrefAccessPoints();
 
     // Notify when pins are deleted (assumption: pins are destroyed only when
     // the related instance is destroyed)

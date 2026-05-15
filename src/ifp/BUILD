@@ -5,6 +5,7 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("//bazel:python_wrap_cc.bzl", "python_wrap_cc")
 load("//bazel:tcl_encode_or.bzl", "tcl_encode")
 load("//bazel:tcl_wrap_cc.bzl", "tcl_wrap_cc")
+load("//test:regression.bzl", "messages_txt")
 
 package(
     default_visibility = ["//:__subpackages__"],
@@ -25,7 +26,7 @@ cc_library(
     deps = [
         "//src/dbSta",
         "//src/dbSta:dbNetwork",
-        "//src/odb",
+        "//src/odb/src/db",
         "//src/sta:opensta_lib",
         "//src/upf",
         "//src/utl",
@@ -43,21 +44,19 @@ cc_library(
     hdrs = [
         "include/ifp/MakeInitFloorplan.hh",
     ],
-    copts = [
-        "-Isrc/ifp/src",
-    ],
     includes = [
         "include",
+        "src",
     ],
     deps = [
         "//:ord",
         "//src/dbSta",
         "//src/gui",
-        "//src/odb",
+        "//src/odb/src/db",
         "//src/sta:opensta_lib",
         "//src/utl",
         "@boost.stacktrace",
-        "@tk_tcl//:tcl",
+        "@tcl_lang//:tcl",
     ],
 )
 
@@ -103,4 +102,17 @@ python_wrap_cc(
     deps = [
         "//src/odb:swig-py",
     ],
+)
+
+filegroup(
+    name = "doc_files",
+    srcs = [
+        "README.md",
+        "src/InitFloorplan.tcl",
+    ],
+    visibility = ["//src/ifp/test:__pkg__"],
+)
+
+messages_txt(
+    visibility = ["//src/ifp/test:__pkg__"],
 )

@@ -20,13 +20,17 @@
 #include "odb/db.h"
 #include "utl/Logger.h"
 // User Code Begin Includes
+#include <vector>
+
 #include "dbCommon.h"
+#include "dbVector.h"
 // User Code End Includes
 namespace odb {
 template class dbTable<_dbPowerSwitch>;
 
 bool _dbPowerSwitch::operator==(const _dbPowerSwitch& rhs) const
 {
+  // NOLINTBEGIN(readability-simplify-boolean-expr)
   if (name_ != rhs.name_) {
     return false;
   }
@@ -44,6 +48,7 @@ bool _dbPowerSwitch::operator==(const _dbPowerSwitch& rhs) const
   }
 
   return true;
+  // NOLINTEND(readability-simplify-boolean-expr)
 }
 
 bool _dbPowerSwitch::operator<(const _dbPowerSwitch& rhs) const

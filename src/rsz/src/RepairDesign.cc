@@ -4,6 +4,7 @@
 #include "RepairDesign.hh"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -28,8 +29,7 @@
 #include "rsz/Resizer.hh"
 #include "sta/ClkNetwork.hh"
 #include "sta/Clock.hh"
-#include "sta/Corner.hh"
-#include "sta/DcalcAnalysisPt.hh"
+#include "sta/ContainerHelpers.hh"
 #include "sta/Delay.hh"
 #include "sta/Fuzzy.hh"
 #include "sta/Graph.hh"
@@ -38,11 +38,13 @@
 #include "sta/Liberty.hh"
 #include "sta/LibertyClass.hh"
 #include "sta/MinMax.hh"
+#include "sta/Mode.hh"
 #include "sta/Network.hh"
 #include "sta/NetworkClass.hh"
 #include "sta/Path.hh"
 #include "sta/PortDirection.hh"
 #include "sta/RiseFallValues.hh"
+#include "sta/Scene.hh"
 #include "sta/Sdc.hh"
 #include "sta/Search.hh"
 #include "sta/SearchPred.hh"
@@ -52,7 +54,6 @@
 #include "sta/TimingRole.hh"
 #include "sta/Transition.hh"
 #include "sta/Units.hh"
-#include "sta/Vector.hh"
 #include "utl/Logger.h"
 #include "utl/mem_stats.h"
 #include "utl/scope.h"
@@ -64,18 +65,6 @@ using std::max;
 using std::min;
 
 using utl::RSZ;
-
-using sta::Clock;
-using sta::INF;
-using sta::InstancePinIterator;
-using sta::NetConnectedPinIterator;
-using sta::NetIterator;
-using sta::NetPinIterator;
-using sta::PortDirection;
-using sta::RiseFallBoth;
-using sta::TimingArc;
-using sta::TimingArcSet;
-using sta::TimingRole;
 
 RepairDesign::RepairDesign(Resizer* resizer) : resizer_(resizer)
 {
@@ -104,7 +93,6 @@ void RepairDesign::init()
 
 void RepairDesign::computeSlewRCFactor()
 {
-  using sta::RiseFall;
   const sta::LibertyLibrary* library = network_->defaultLibertyLibrary();
   float factor = 0.0;
   for (auto rf : sta::RiseFall::range()) {
@@ -125,7 +113,7 @@ void RepairDesign::computeSlewRCFactor()
     // scale by slew derate
     float rf_factor = (t_low - t_high) / library->slewDerateFromLibrary();
     // check the factor has the right order of magnitude
-    if (!(rf_factor > 0.1 && rf_factor < 10.0)) {
+    if (rf_factor <= 0.1 || rf_factor >= 10.0) {
       logger_->error(
           RSZ,
           101,
@@ -186,8 +174,9 @@ void RepairDesign::performEarlySizingRound(int& repaired_net_count)
   std::set<std::pair<sta::Vertex*, int>> slew_user_annotated;
 
   // We need to override slews in order to get good required time estimates.
-  for (int i = resizer_->level_drvr_vertices_.size() - 1; i >= 0; i--) {
-    sta::Vertex* drvr = resizer_->level_drvr_vertices_[i];
+  const sta::VertexSeq drvrs = sta_->levelizedDrvrVertices();
+  for (int i = drvrs.size() - 1; i >= 0; i--) {
+    sta::Vertex* drvr = drvrs[i];
     debugPrint(logger_,
                RSZ,
                "early_sizing",
@@ -211,8 +200,8 @@ void RepairDesign::performEarlySizingRound(int& repaired_net_count)
   sta_->searchPreamble();
   search_->findAllArrivals();
 
-  for (int i = resizer_->level_drvr_vertices_.size() - 1; i >= 0; i--) {
-    sta::Vertex* drvr = resizer_->level_drvr_vertices_[i];
+  for (int i = drvrs.size() - 1; i >= 0; i--) {
+    sta::Vertex* drvr = drvrs[i];
     sta::Pin* drvr_pin = drvr->pin();
     debugPrint(logger_,
                RSZ,
@@ -234,9 +223,9 @@ void RepairDesign::performEarlySizingRound(int& repaired_net_count)
     search_->findRequireds(drvr->level() + 1);
 
     if (resizer_->okToBufferNet(drvr_pin)
-        && !sta_->isClock(drvr_pin)
+        && !sta_->isClock(drvr_pin, sta_->cmdMode())
         // Exclude tie hi/low cells and supply nets.
-        && !drvr->isConstant()) {
+        && !sta_->isConstant(drvr_pin, sta_->cmdMode())) {
       debugPrint(logger_,
                  RSZ,
                  "early_sizing",
@@ -244,7 +233,8 @@ void RepairDesign::performEarlySizingRound(int& repaired_net_count)
                  "  Net {} is eligible for repair.",
                  network_->pathName(net));
       float fanout, max_fanout, fanout_slack;
-      sta_->checkFanout(drvr_pin, max_, fanout, max_fanout, fanout_slack);
+      sta_->checkFanout(
+          drvr_pin, sta_->cmdMode(), max_, fanout, max_fanout, fanout_slack);
 
       bool repaired_net = false;
       if (max_fanout <= 0) {
@@ -279,17 +269,13 @@ void RepairDesign::performEarlySizingRound(int& repaired_net_count)
     for (auto mm : sta::MinMaxAll::all()->range()) {
       for (auto rf : sta::RiseFallBoth::riseFall()->range()) {
         if (!slew_user_annotated.contains(std::make_pair(drvr, rf->index()))) {
-          const sta::DcalcAnalysisPt* dcalc_ap
-              = resizer_->tgt_slew_corner_->findDcalcAnalysisPt(mm);
-          drvr->setSlewAnnotated(false, rf, dcalc_ap->index());
+          drvr->setSlewAnnotated(
+              false, rf, resizer_->tgt_slew_corner_->dcalcAnalysisPtIndex(mm));
         }
       }
     }
   }
   debugPrint(logger_, RSZ, "early_sizing", 1, "Early sizing round finished.");
-
-  resizer_->level_drvr_vertices_valid_ = false;
-  resizer_->ensureLevelDrvrVertices();
 }
 
 void RepairDesign::repairDesign(
@@ -317,9 +303,9 @@ void RepairDesign::repairDesign(
   resize_count_ = 0;
   resizer_->resized_multi_output_insts_.clear();
 
-  sta_->checkSlewLimitPreamble();
-  sta_->checkCapacitanceLimitPreamble();
-  sta_->checkFanoutLimitPreamble();
+  sta_->checkSlewsPreamble();
+  sta_->checkCapacitancesPreamble(sta_->scenes());
+  sta_->checkFanoutPreamble();
   sta_->searchPreamble();
   search_->findAllArrivals();
 
@@ -329,7 +315,7 @@ void RepairDesign::repairDesign(
 
   // keep track of annotations which were added by us
   std::set<sta::Vertex*> annotations_to_clean_up;
-  std::map<sta::Vertex*, sta::Corner*> drvr_with_load_slew_viol;
+  std::map<sta::Vertex*, sta::Scene*> drvr_with_load_slew_viol;
   sta::VertexSeq load_vertices = resizer_->orderedLoadPinVertices();
 
   // Forward pass: whenever we see violating input pin slew we override
@@ -341,14 +327,13 @@ void RepairDesign::repairDesign(
       sta_->findDelays(vertex);
       sta::LibertyPort* port = network_->libertyPort(vertex->pin());
       if (port) {
-        for (auto corner : *sta_->corners()) {
-          const sta::DcalcAnalysisPt* dcalc_ap
-              = corner->findDcalcAnalysisPt(max_);
+        for (auto corner : sta_->scenes()) {
           float limit = resizer_->maxInputSlew(port, corner);
           float actual;
           bool slew_viol = false;
           for (const sta::RiseFall* rf : sta::RiseFall::range()) {
-            actual = graph_->slew(vertex, rf, dcalc_ap->index());
+            actual
+                = graph_->slew(vertex, rf, corner->dcalcAnalysisPtIndex(max_));
             if (actual > limit) {
               slew_viol = true;
               break;
@@ -358,7 +343,7 @@ void RepairDesign::repairDesign(
             sta_->setAnnotatedSlew(vertex,
                                    corner,
                                    max_->asMinMaxAll(),
-                                   RiseFallBoth::riseFall(),
+                                   sta::RiseFallBoth::riseFall(),
                                    limit);
             annotations_to_clean_up.insert(vertex);
             sta::PinSet* drivers = network_->drivers(vertex->pin());
@@ -372,8 +357,8 @@ void RepairDesign::repairDesign(
                            2,
                            "Fwd pass: drvr {} has slew {} vs. limit {}",
                            sdc_network_->pathName(drvr_pin),
-                           delayAsString(actual, this, 3),
-                           delayAsString(limit, this, 3));
+                           delayAsString(actual, 3, this),
+                           delayAsString(limit, 3, this));
               }
             }
           }
@@ -390,23 +375,31 @@ void RepairDesign::repairDesign(
              annotations_to_clean_up.size());
 
   int print_iteration = 0;
+  const sta::VertexSeq driver_vertices = sta_->levelizedDrvrVertices();
   {
     // Fix violations from outputs to inputs
     est::IncrementalParasiticsGuard guard(estimate_parasitics_);
-    if (resizer_->level_drvr_vertices_.size()
-        > size_t(5) * max_print_interval_) {
+    if (driver_vertices.size() > size_t(5) * max_print_interval_) {
       print_interval_ = max_print_interval_;
     } else {
       print_interval_ = min_print_interval_;
     }
-    printProgress(print_iteration, false, false, repaired_net_count);
+    printProgress(print_iteration,
+                  false,
+                  false,
+                  repaired_net_count,
+                  static_cast<int>(driver_vertices.size()));
     int max_length = resizer_->metersToDbu(max_wire_length);
-    for (int i = resizer_->level_drvr_vertices_.size() - 1; i >= 0; i--) {
+    for (int i = driver_vertices.size() - 1; i >= 0; i--) {
       print_iteration++;
       if (verbose || (print_iteration == 1)) {
-        printProgress(print_iteration, false, false, repaired_net_count);
+        printProgress(print_iteration,
+                      false,
+                      false,
+                      repaired_net_count,
+                      static_cast<int>(driver_vertices.size()));
       }
-      sta::Vertex* drvr = resizer_->level_drvr_vertices_[i];
+      sta::Vertex* drvr = driver_vertices[i];
       repairDriver(drvr,
                    true /* check_slew */,
                    true /* check_cap */,
@@ -427,21 +420,21 @@ void RepairDesign::repairDesign(
 
   if (!annotations_to_clean_up.empty()) {
     for (auto vertex : annotations_to_clean_up) {
-      for (auto corner : *sta_->corners()) {
-        const sta::DcalcAnalysisPt* dcalc_ap
-            = corner->findDcalcAnalysisPt(max_);
+      for (auto corner : sta_->scenes()) {
         for (const sta::RiseFall* rf : sta::RiseFall::range()) {
-          vertex->setSlewAnnotated(false, rf, dcalc_ap->index());
+          vertex->setSlewAnnotated(
+              false, rf, corner->dcalcAnalysisPtIndex(max_));
         }
       }
     }
     sta_->delaysInvalid();
   }
 
-  printProgress(print_iteration, true, true, repaired_net_count);
-  if (inserted_buffer_count_ > 0) {
-    resizer_->level_drvr_vertices_valid_ = false;
-  }
+  printProgress(print_iteration,
+                true,
+                true,
+                repaired_net_count,
+                static_cast<int>(driver_vertices.size()));
   db_network_->removeUnusedPortsAndPinsOnModuleInstances();
 }
 
@@ -478,10 +471,12 @@ void RepairDesign::repairClkNets(double max_wire_length)
   {
     est::IncrementalParasiticsGuard guard(estimate_parasitics_);
     int max_length = resizer_->metersToDbu(max_wire_length);
-    for (Clock* clk : sdc_->clks()) {
-      const sta::PinSet* clk_pins = sta_->pins(clk);
+    for (sta::Clock* clk : sta_->cmdMode()->sdc()->clocks()) {
+      const sta::PinSet* clk_pins = sta_->pins(clk, sta_->cmdMode());
       if (clk_pins) {
-        for (const sta::Pin* clk_pin : *clk_pins) {
+        // Make a copy in case the set of pins is updated
+        const sta::PinSet clk_pins_copy = *clk_pins;
+        for (const sta::Pin* clk_pin : clk_pins_copy) {
           // clang-format off
           sta::Net* net = network_->isTopLevelPort(clk_pin)
                          ? db_network_->dbToSta(
@@ -520,7 +515,6 @@ void RepairDesign::repairClkNets(double max_wire_length)
                   "Inserted {} buffers in {} nets.",
                   inserted_buffer_count_,
                   repaired_net_count);
-    resizer_->level_drvr_vertices_valid_ = false;
   }
 
   // Restore previous sizing restrictions when area_limit and leakage_limit go
@@ -545,19 +539,17 @@ void RepairDesign::repairNet(sta::Net* net,
   inserted_buffer_count_ = 0;
   resize_count_ = 0;
   resizer_->resized_multi_output_insts_.clear();
-  resizer_->buffer_moved_into_core_ = false;
 
-  sta_->checkSlewLimitPreamble();
-  sta_->checkCapacitanceLimitPreamble();
-  sta_->checkFanoutLimitPreamble();
+  sta_->checkSlewsPreamble();
+  sta_->checkCapacitancesPreamble(sta_->scenes());
+  sta_->checkFanoutPreamble();
 
   {
     est::IncrementalParasiticsGuard guard(estimate_parasitics_);
     int max_length = resizer_->metersToDbu(max_wire_length);
     sta::PinSet* drivers = network_->drivers(net);
     if (drivers && !drivers->empty()) {
-      sta::PinSet::Iterator drvr_iter(drivers);
-      const sta::Pin* drvr_pin = drvr_iter.next();
+      const sta::Pin* drvr_pin = *drivers->begin();
       sta::Vertex* drvr = graph_->pinDrvrVertex(drvr_pin);
       repairNet(net,
                 drvr_pin,
@@ -597,7 +589,8 @@ bool RepairDesign::getLargestSizeCin(const sta::Pin* drvr_pin, float& cin)
       int nports = 0;
       while (port_iter.hasNext()) {
         const sta::LibertyPort* port = port_iter.next();
-        if (!port->isPwrGnd() && port->direction() == PortDirection::input()) {
+        if (!port->isPwrGnd()
+            && port->direction() == sta::PortDirection::input()) {
           size_cin += port->capacitance();
           nports++;
         }
@@ -624,7 +617,8 @@ bool RepairDesign::getCin(const sta::Pin* drvr_pin, float& cin)
     int nports = 0;
     while (port_iter.hasNext()) {
       const sta::LibertyPort* port = port_iter.next();
-      if (!port->isPwrGnd() && port->direction() == PortDirection::input()) {
+      if (!port->isPwrGnd()
+          && port->direction() == sta::PortDirection::input()) {
         cin += port->capacitance();
         nports++;
       }
@@ -695,7 +689,7 @@ bool RepairDesign::performGainBuffering(sta::Net* net,
     sta::Required required(const StaState*) const
     {
       if (required_path == nullptr) {
-        return INF;
+        return sta::INF;
       }
       return required_path->required() - required_delay;
     }
@@ -728,19 +722,18 @@ bool RepairDesign::performGainBuffering(sta::Net* net,
       if (la < lb) {
         return false;
       }
-      return sta::stringLess(network_->pathName(a.pin),
-                             network_->pathName(b.pin));
+      return network_->pathName(a.pin) < network_->pathName(b.pin);
     }
   };
 
   // 1. Collect all sinks
   std::vector<EnqueuedPin> sinks;
 
-  NetConnectedPinIterator* pin_iter = network_->connectedPinIterator(net);
+  sta::NetConnectedPinIterator* pin_iter = network_->connectedPinIterator(net);
   while (pin_iter->hasNext()) {
     const sta::Pin* pin = pin_iter->next();
     if (pin != drvr_pin && !network_->isTopLevelPort(pin)
-        && network_->direction(pin) == PortDirection::input()
+        && network_->direction(pin) == sta::PortDirection::input()
         && network_->libertyPort(pin)) {
       sta::Instance* inst = network_->instance(pin);
       if (!resizer_->dontTouch(inst)) {
@@ -839,12 +832,13 @@ bool RepairDesign::performGainBuffering(sta::Net* net,
 
     // 4. New buffer input pin is enqueued as a new sink
     sta::Delay buffer_delay = resizer_->bufferDelay(
-        *buf_cell, load_acc, resizer_->tgt_slew_dcalc_ap_);
+        *buf_cell, load_acc, resizer_->tgt_slew_corner_, max_);
 
-    auto new_pin = EnqueuedPin{new_input_pin,
-                               (group_end - 1)->required_path,
-                               (group_end - 1)->required_delay + buffer_delay,
-                               max_level + 1};
+    auto new_pin = EnqueuedPin{
+        .pin = new_input_pin,
+        .required_path = (group_end - 1)->required_path,
+        .required_delay = (group_end - 1)->required_delay + buffer_delay,
+        .level = max_level + 1};
 
     sinks.erase(sinks.begin(), group_end);
     sinks.insert(
@@ -867,14 +861,14 @@ bool RepairDesign::performGainBuffering(sta::Net* net,
   return repaired_net;
 }
 
-void RepairDesign::checkDriverArcSlew(const sta::Corner* corner,
+void RepairDesign::checkDriverArcSlew(const sta::Scene* corner,
                                       const sta::Instance* inst,
-                                      const TimingArc* arc,
+                                      const sta::TimingArc* arc,
                                       float load_cap,
                                       float limit,
                                       float& violation)
 {
-  const sta::DcalcAnalysisPt* dcalc_ap = corner->findDcalcAnalysisPt(max_);
+  const auto dcalc_ap = corner->dcalcAnalysisPtIndex(max_);
   const sta::RiseFall* in_rf = arc->fromEdge()->asRiseFall();
   sta::GateTimingModel* model
       = dynamic_cast<sta::GateTimingModel*>(arc->model());
@@ -882,19 +876,21 @@ void RepairDesign::checkDriverArcSlew(const sta::Corner* corner,
 
   if (model && in_pin) {
     const bool use_ideal_clk_slew
-        = arc->set()->role()->genericRole() == TimingRole::regClkToQ()
-          && clk_network_->isIdealClock(in_pin);
-    sta::Slew in_slew
+        = arc->set()->role()->genericRole() == sta::TimingRole::regClkToQ()
+          && sta_->cmdMode()->clkNetwork()->isIdealClock(in_pin);
+    float in_slew
         = use_ideal_clk_slew
-              ? clk_network_->idealClkSlew(
-                    in_pin, in_rf, dcalc_ap->slewMinMax())
-              : graph_->slew(
-                    graph_->pinLoadVertex(in_pin), in_rf, dcalc_ap->index());
-    const sta::Pvt* pvt = dcalc_ap->operatingConditions();
+              ? sta_->cmdMode()->clkNetwork()->idealClkSlew(in_pin, in_rf, max_)
+              : float(graph_->slew(
+                    graph_->pinLoadVertex(in_pin), in_rf, dcalc_ap));
+    const sta::Pvt* pvt = corner->sdc()->pvt(inst, max_);
+    if (pvt == nullptr) {
+      pvt = corner->sdc()->operatingConditions(max_);
+    }
 
-    sta::ArcDelay arc_delay;
-    sta::Slew arc_slew;
-    model->gateDelay(pvt, in_slew, load_cap, false, arc_delay, arc_slew);
+    float arc_delay;
+    float arc_slew;
+    model->gateDelay(pvt, in_slew, load_cap, arc_delay, arc_slew);
 
     if (arc_slew > limit) {
       violation = max(arc_slew - limit, violation);
@@ -905,7 +901,7 @@ void RepairDesign::checkDriverArcSlew(const sta::Corner* corner,
 // Repair max slew violation at a driver pin: Find the smallest
 // size which fits max slew; if none can be found, at least pick
 // the size for which the slew is lowest
-bool RepairDesign::repairDriverSlew(const sta::Corner* corner,
+bool RepairDesign::repairDriverSlew(const sta::Scene* corner,
                                     const sta::Pin* drvr_pin)
 {
   sta::Instance* inst = network_->instance(drvr_pin);
@@ -913,8 +909,7 @@ bool RepairDesign::repairDriverSlew(const sta::Corner* corner,
 
   float load_cap;
   estimate_parasitics_->ensureWireParasitic(drvr_pin);
-  load_cap
-      = graph_delay_calc_->loadCap(drvr_pin, corner->findDcalcAnalysisPt(max_));
+  load_cap = graph_delay_calc_->loadCap(drvr_pin, corner, max_);
 
   if (!network_->isTopLevelPort(drvr_pin) && !resizer_->dontTouch(inst) && cell
       && resizer_->isLogicStdCell(inst)) {
@@ -933,13 +928,14 @@ bool RepairDesign::repairDriverSlew(const sta::Corner* corner,
 
         if (limit_exists) {
           float limit_w_margin = maxSlewMargined(limit);
-          for (TimingArcSet* arc_set : size_cell->timingArcSets()) {
-            const TimingRole* role = arc_set->role();
-            if (!role->isTimingCheck() && role != TimingRole::tristateDisable()
-                && role != TimingRole::tristateEnable()
-                && role != TimingRole::clockTreePathMin()
-                && role != TimingRole::clockTreePathMax()) {
-              for (TimingArc* arc : arc_set->arcs()) {
+          for (sta::TimingArcSet* arc_set : size_cell->timingArcSets()) {
+            const sta::TimingRole* role = arc_set->role();
+            if (!role->isTimingCheck()
+                && role != sta::TimingRole::tristateDisable()
+                && role != sta::TimingRole::tristateEnable()
+                && role != sta::TimingRole::clockTreePathMin()
+                && role != sta::TimingRole::clockTreePathMax()) {
+              for (sta::TimingArc* arc : arc_set->arcs()) {
                 checkDriverArcSlew(
                     corner, inst, arc, load_cap, limit_w_margin, violation);
               }
@@ -957,7 +953,7 @@ bool RepairDesign::repairDriverSlew(const sta::Corner* corner,
 
       std::ranges::sort(sizes, [](SizeCandidate a, SizeCandidate b) {
         if (a.first == 0 && b.first == 0) {
-          // both sizes non-violating: sort by area
+          // both sizes non-violating: sta::sort by area
           return a.second->area() < b.second->area();
         }
         return a.first < b.first;
@@ -979,7 +975,7 @@ void RepairDesign::repairDriver(sta::Vertex* drvr,
                                 bool check_fanout,
                                 int max_length,  // dbu
                                 bool resize_drvr,
-                                sta::Corner* corner_w_load_slew_viol,
+                                sta::Scene* corner_w_load_slew_viol,
                                 int& repaired_net_count,
                                 int& slew_violations,
                                 int& cap_violations,
@@ -999,9 +995,9 @@ void RepairDesign::repairDriver(sta::Vertex* drvr,
   // Don't check okToBufferNet here as we are going to do a mix of driver
   // sizing and buffering.  Further checks exist in repairNet.
   if (net && !resizer_->dontTouch(net) && !net_db->isConnectedByAbutment()
-      && !sta_->isClock(drvr_pin)
+      && !sta_->isClock(drvr_pin, sta_->cmdMode())
       // Exclude tie hi/low cells and supply nets.
-      && !drvr->isConstant()) {
+      && !sta_->isConstant(drvr_pin, sta_->cmdMode())) {
     repairNet(net,
               drvr_pin,
               drvr,
@@ -1031,7 +1027,7 @@ void RepairDesign::repairNet(sta::Net* net,
                              bool check_fanout,
                              int max_length,  // dbu
                              bool resize_drvr,
-                             sta::Corner* corner_w_load_slew_viol,
+                             sta::Scene* corner_w_load_slew_viol,
                              int& repaired_net_count,
                              int& slew_violations,
                              int& cap_violations,
@@ -1046,13 +1042,15 @@ void RepairDesign::repairNet(sta::Net* net,
                1,
                "repair net {}",
                sdc_network_->pathName(drvr_pin));
-    const sta::Corner* corner = sta_->cmdCorner();
+    const sta::Scene* corner = sta_->cmdScene();
     bool repaired_net = false;
 
     // Fanout is addressed by creating region repeaters
     if (check_fanout) {
       float fanout, max_fanout, fanout_slack;
-      sta_->checkFanout(drvr_pin, max_, fanout, max_fanout, fanout_slack);
+      sta_->checkFanout(
+          drvr_pin, sta_->cmdMode(), max_, fanout, max_fanout, fanout_slack);
+
       if (max_fanout > 0.0 && fanout_slack < 0.0) {
         fanout_violations++;
         repaired_net = true;
@@ -1071,7 +1069,7 @@ void RepairDesign::repairNet(sta::Net* net,
       }
     }
 
-    float max_cap = INF;
+    float max_cap = sta::INF;
     bool repair_cap = false, repair_load_slew = false, repair_wire = false;
 
     estimate_parasitics_->ensureWireParasitic(drvr_pin, net);
@@ -1082,8 +1080,9 @@ void RepairDesign::repairNet(sta::Net* net,
 
       // First repair driver slew -- addressed by resizing the driver,
       // and if that doesn't fix it fully, by inserting buffers
-      float slew1, max_slew1, slew_slack1;
-      const sta::Corner* corner1;
+      sta::Slew slew1;
+      float max_slew1, slew_slack1;
+      const sta::Scene* corner1;
       checkSlew(drvr_pin, slew1, max_slew1, slew_slack1, corner1);
       if (slew_slack1 < 0.0f) {
         debugPrint(logger_,
@@ -1092,8 +1091,8 @@ void RepairDesign::repairNet(sta::Net* net,
                    2,
                    "drvr slew violation pin={} slew={} max_slew={}",
                    network_->name(drvr_pin),
-                   delayAsString(slew1, this, 3),
-                   delayAsString(max_slew1, this, 3));
+                   delayAsString(slew1, 3, this),
+                   delayAsString(max_slew1, 3, this));
 
         slew_violation = true;
         if (repairDriverSlew(corner1, drvr_pin)) {
@@ -1103,7 +1102,7 @@ void RepairDesign::repairNet(sta::Net* net,
           checkSlew(drvr_pin, slew1, max_slew1, slew_slack1, corner1);
         }
 
-        // Slew violation persists after resizing the driver, derive
+        // sta::Slew violation persists after resizing the driver, derive
         // the max cap we need to apply to remove the slew violation
         if (slew_slack1 < 0.0f) {
           sta::LibertyPort* drvr_port = network_->libertyPort(drvr_pin);
@@ -1127,8 +1126,8 @@ void RepairDesign::repairNet(sta::Net* net,
                      2,
                      "load slew violation pin={} load_slew={} max_slew={}",
                      network_->name(drvr_pin),
-                     delayAsString(slew1, this, 3),
-                     delayAsString(max_slew1, this, 3));
+                     delayAsString(slew1, 3, this),
+                     delayAsString(max_slew1, 3, this));
           slew_violation = true;
           repair_load_slew = true;
           // If repair_cap is true, corner is already set to correspond
@@ -1191,13 +1190,13 @@ void RepairDesign::repairNet(sta::Net* net,
 bool RepairDesign::needRepairCap(const sta::Pin* drvr_pin,
                                  int& cap_violations,
                                  float& max_cap,
-                                 const sta::Corner*& corner)
+                                 const sta::Scene*& corner)
 {
   float cap1, max_cap1, cap_slack1;
-  const sta::Corner* corner1;
+  const sta::Scene* corner1;
   const sta::RiseFall* tr1;
   sta_->checkCapacitance(
-      drvr_pin, nullptr, max_, corner1, tr1, cap1, max_cap1, cap_slack1);
+      drvr_pin, sta_->scenes(), max_, cap1, max_cap1, cap_slack1, tr1, corner1);
   if (max_cap1 > 0.0 && corner1) {
     max_cap1 *= (1.0 - cap_margin_ / 100.0);
 
@@ -1228,18 +1227,25 @@ void RepairDesign::checkSlew(const sta::Pin* drvr_pin,
                              sta::Slew& slew,
                              float& limit,
                              float& slack,
-                             const sta::Corner*& corner)
+                             const sta::Scene*& corner)
 {
-  slack = INF;
-  limit = INF;
+  slack = sta::INF;
+  limit = sta::INF;
   corner = nullptr;
 
-  const sta::Corner* corner1;
+  const sta::Scene* corner1;
   const sta::RiseFall* tr1;
   sta::Slew slew1;
   float limit1, slack1;
-  sta_->checkSlew(
-      drvr_pin, nullptr, max_, false, corner1, tr1, slew1, limit1, slack1);
+  sta_->checkSlew(drvr_pin,
+                  sta_->scenes(),
+                  max_,
+                  false,
+                  slew1,
+                  limit1,
+                  slack1,
+                  tr1,
+                  corner1);
   if (corner1) {
     limit1 *= (1.0 - slew_margin_ / 100.0);
     slack1 = limit1 - slew1;
@@ -1253,7 +1259,7 @@ void RepairDesign::checkSlew(const sta::Pin* drvr_pin,
 }
 
 float RepairDesign::bufferInputMaxSlew(sta::LibertyCell* buffer,
-                                       const sta::Corner* corner) const
+                                       const sta::Scene* corner) const
 {
   sta::LibertyPort *input, *output;
   buffer->bufferPorts(input, output);
@@ -1263,28 +1269,27 @@ float RepairDesign::bufferInputMaxSlew(sta::LibertyCell* buffer,
 // Find the output port load capacitance that results in slew.
 double RepairDesign::findSlewLoadCap(sta::LibertyPort* drvr_port,
                                      double slew,
-                                     const sta::Corner* corner)
+                                     const sta::Scene* corner)
 {
-  const sta::DcalcAnalysisPt* dcalc_ap = corner->findDcalcAnalysisPt(max_);
   double drvr_res = drvr_port->driveResistance();
   if (drvr_res == 0.0) {
-    return INF;
+    return sta::INF;
   }
   // cap1 lower bound
   // cap2 upper bound
   double cap1 = 0.0;
   double cap2 = slew / drvr_res * 2;
   double tol = .01;  // 1%
-  double diff1 = gateSlewDiff(drvr_port, cap2, slew, dcalc_ap);
+  double diff1 = gateSlewDiff(drvr_port, cap2, slew, corner, max_);
   // binary search for diff = 0.
   while (abs(cap1 - cap2) > max(cap1, cap2) * tol) {
     if (diff1 < 0.0) {
       cap1 = cap2;
       cap2 *= 2;
-      diff1 = gateSlewDiff(drvr_port, cap2, slew, dcalc_ap);
+      diff1 = gateSlewDiff(drvr_port, cap2, slew, corner, max_);
     } else {
       double cap3 = (cap1 + cap2) / 2.0;
-      double diff2 = gateSlewDiff(drvr_port, cap3, slew, dcalc_ap);
+      double diff2 = gateSlewDiff(drvr_port, cap3, slew, corner, max_);
       if (diff2 < 0.0) {
         cap1 = cap3;
       } else {
@@ -1300,11 +1305,12 @@ double RepairDesign::findSlewLoadCap(sta::LibertyPort* drvr_port,
 double RepairDesign::gateSlewDiff(sta::LibertyPort* drvr_port,
                                   double load_cap,
                                   double slew,
-                                  const sta::DcalcAnalysisPt* dcalc_ap)
+                                  const sta::Scene* scene,
+                                  const sta::MinMax* min_max)
 {
   sta::ArcDelay delays[sta::RiseFall::index_count];
   sta::Slew slews[sta::RiseFall::index_count];
-  resizer_->gateDelays(drvr_port, load_cap, dcalc_ap, delays, slews);
+  resizer_->gateDelays(drvr_port, load_cap, scene, min_max, delays, slews);
   sta::Slew gate_slew = max(slews[sta::RiseFall::riseIndex()],
                             slews[sta::RiseFall::fallIndex()]);
   return gate_slew - slew;
@@ -1316,7 +1322,7 @@ void RepairDesign::repairNet(const BufferedNetPtr& bnet,
                              const sta::Pin* drvr_pin,
                              float max_cap,
                              int max_length,  // dbu
-                             const sta::Corner* corner)
+                             const sta::Scene* corner)
 {
   drvr_pin_ = drvr_pin;
   max_cap_ = max_cap;
@@ -1391,8 +1397,9 @@ void RepairDesign::repairNetVia(const BufferedNetPtr& bnet,
   bnet->setCapacitance(bnet->ref()->cap());
   bnet->setFanout(bnet->ref()->fanout());
   float r_via = bnet->viaResistance(corner_, resizer_, estimate_parasitics_);
+  assert(slew_rc_factor_.has_value());
   bnet->setMaxLoadSlew(bnet->ref()->maxLoadSlew()
-                       - (r_via * bnet->ref()->cap() * slew_rc_factor_));
+                       - (r_via * bnet->ref()->cap() * (*slew_rc_factor_)));
 }
 
 void RepairDesign::repairNetWire(
@@ -1452,9 +1459,10 @@ void RepairDesign::repairNetWire(
   double r_wire = length1 * wire_res;
   double c_wire = length1 * wire_cap;
 
+  assert(slew_rc_factor_.has_value());
   double load_slew
       = (r_drvr * (c_wire + ref_cap) + r_wire * ref_cap + r_wire * c_wire / 2)
-        * slew_rc_factor_;
+        * (*slew_rc_factor_);
 
   debugPrint(logger_,
              RSZ,
@@ -1464,9 +1472,9 @@ void RepairDesign::repairNetWire(
              "ref_cap={} layer={} wire_res={}",
              "",
              level,
-             delayAsString(load_slew, this, 3),
+             delayAsString(load_slew, 3, this),
              units_->resistanceUnit()->asString(r_drvr, 3),
-             delayAsString(bnet->ref()->maxLoadSlew(), this, 3),
+             delayAsString(bnet->ref()->maxLoadSlew(), 3, this),
              r_wire,
              ref_cap,
              bnet->layer(),
@@ -1477,8 +1485,9 @@ void RepairDesign::repairNetWire(
 
   bnet->setCapacitance(load_cap);
   bnet->setFanout(bnet->ref()->fanout());
-  bnet->setMaxLoadSlew(bnet->ref()->maxLoadSlew()
-                       - (r_wire * (c_wire / 2 + ref_cap) * slew_rc_factor_));
+  bnet->setMaxLoadSlew(
+      bnet->ref()->maxLoadSlew()
+      - (r_wire * (c_wire / 2 + ref_cap) * (*slew_rc_factor_)));
 
   //============================================================================
   // Back up from pt to from_pt adding repeaters as necessary for
@@ -1532,8 +1541,8 @@ void RepairDesign::repairNetWire(
                  "{:{}s}max load slew violation {} > {}",
                  "",
                  level,
-                 delayAsString(load_slew, this, 3),
-                 delayAsString(max_load_slew_margined, this, 3));
+                 delayAsString(load_slew, 3, this),
+                 delayAsString(max_load_slew_margined, 3, this));
       // We are inserting a buffer to cut this wire segment short.
       // The slew at the end of the wire segment is a quadratic polynomial
       // in terms of the wire segment's length (in Elmore approx.).
@@ -1541,8 +1550,19 @@ void RepairDesign::repairNetWire(
       // We solve a quadratic eq. to find the maximum conforming length.
       float a = wire_res * wire_cap / 2;
       float b = (r_drvr * wire_cap) + (wire_res * ref_cap);
-      float c = (r_drvr * ref_cap) - (max_load_slew_margined / slew_rc_factor_);
-      float l = (-b + sqrt(b * b - 4 * a * c)) / (2 * a);
+      float c
+          = (r_drvr * ref_cap) - (max_load_slew_margined / (*slew_rc_factor_));
+      float l = 0.0;
+      if (a > 1e-12) {  // Quadratic case
+        const float discriminant = b * b - 4 * a * c;
+        if (discriminant >= 0.0) {
+          l = (-b + sqrt(discriminant)) / (2 * a);
+        }
+      } else if (b > 1e-12) {
+        // a * l^2 + b * l + c = 0 becomes
+        // b * l + c = 0 when a is very small
+        l = -c / b;
+      }
       if (l >= 0.0) {
         split_length = min(split_length, metersToDbu(l));
       } else {
@@ -1606,14 +1626,15 @@ void RepairDesign::repairNetWire(
       c_wire = length1 * wire_cap;
       load_slew = (r_drvr * (c_wire + ref_cap) + r_wire * ref_cap
                    + r_wire * c_wire / 2)
-                  * slew_rc_factor_;
+                  * (*slew_rc_factor_);
       buffer_cell = resizer_->findTargetCell(
           resizer_->buffer_lowest_drive_, load_cap, false);
 
       bnet->setCapacitance(load_cap);
       bnet->setFanout(repeater_fanout);
       bnet->setMaxLoadSlew(
-          max_load_slew - (r_wire * (c_wire / 2 + ref_cap) * slew_rc_factor_));
+          max_load_slew
+          - (r_wire * (c_wire / 2 + ref_cap) * (*slew_rc_factor_)));
 
       debugPrint(logger_,
                  RSZ,
@@ -1623,7 +1644,7 @@ void RepairDesign::repairNetWire(
                  "",
                  level,
                  units_->distanceUnit()->asString(length1, 1),
-                 delayAsString(load_slew, this, 3));
+                 delayAsString(load_slew, 3, this));
     } else {
       break;
     }
@@ -1706,7 +1727,8 @@ void RepairDesign::repairNetJunc(
 
   // Calculate estimated slew based on RC
   float r_drvr = resizer_->driveResistance(drvr_pin_);
-  float load_slew = r_drvr * load_cap * slew_rc_factor_;
+  assert(slew_rc_factor_.has_value());
+  float load_slew = r_drvr * load_cap * (*slew_rc_factor_);
   bool load_slew_violation = load_slew > max_load_slew_margined;
 
   const char* repeater_reason = nullptr;
@@ -1719,11 +1741,11 @@ void RepairDesign::repairNetJunc(
                "{:{}s}load slew violation {} > {}",
                "",
                level,
-               delayAsString(load_slew, this, 3),
-               delayAsString(max_load_slew_margined, this, 3));
-    double slew_left = r_drvr * cap_left * slew_rc_factor_;
+               delayAsString(load_slew, 3, this),
+               delayAsString(max_load_slew_margined, 3, this));
+    double slew_left = r_drvr * cap_left * (*slew_rc_factor_);
     double slew_slack_left = maxSlewMargined(max_load_slew_left) - slew_left;
-    double slew_right = r_drvr * cap_right * slew_rc_factor_;
+    double slew_right = r_drvr * cap_right * (*slew_rc_factor_);
     double slew_slack_right = maxSlewMargined(max_load_slew_right) - slew_right;
     debugPrint(logger_,
                RSZ,
@@ -1732,8 +1754,8 @@ void RepairDesign::repairNetJunc(
                "{:{}s} slew slack left={} right={}",
                "",
                level,
-               delayAsString(slew_slack_left, this, 3),
-               delayAsString(slew_slack_right, this, 3));
+               delayAsString(slew_slack_left, 3, this),
+               delayAsString(slew_slack_right, 3, this));
     // Isolate the branch with the smaller slack.
     if (slew_slack_left < slew_slack_right) {
       repeater_left = true;
@@ -2123,7 +2145,7 @@ bool RepairDesign::makeRepeater(const char* reason,
 bool RepairDesign::hasInputPort(const sta::Net* net)
 {
   bool has_top_level_port = false;
-  NetConnectedPinIterator* pin_iter = network_->connectedPinIterator(net);
+  sta::NetConnectedPinIterator* pin_iter = network_->connectedPinIterator(net);
   while (pin_iter->hasNext()) {
     const sta::Pin* pin = pin_iter->next();
     if (network_->isTopLevelPort(pin)
@@ -2211,19 +2233,19 @@ sta::LibertyCell* RepairDesign::findBufferUnderSlew(float max_slew,
                                                     float load_cap)
 {
   sta::LibertyCell* min_slew_buffer = resizer_->buffer_lowest_drive_;
-  float min_slew = INF;
+  float min_slew = sta::INF;
   sta::LibertyCellSeq swappable_cells
       = resizer_->getSwappableCells(resizer_->buffer_lowest_drive_);
   if (!swappable_cells.empty()) {
-    sort(swappable_cells,
-         [this](const sta::LibertyCell* buffer1,
-                const sta::LibertyCell* buffer2) {
-           return resizer_->bufferDriveResistance(buffer1)
-                  > resizer_->bufferDriveResistance(buffer2);
-         });
+    std::ranges::sort(swappable_cells,
+                      [this](const sta::LibertyCell* buffer1,
+                             const sta::LibertyCell* buffer2) {
+                        return resizer_->bufferDriveResistance(buffer1)
+                               > resizer_->bufferDriveResistance(buffer2);
+                      });
     for (sta::LibertyCell* buffer : swappable_cells) {
       float slew = resizer_->bufferSlew(
-          buffer, load_cap, resizer_->tgt_slew_dcalc_ap_);
+          buffer, load_cap, resizer_->tgt_slew_corner_, resizer_->max_);
       debugPrint(logger_,
                  RSZ,
                  "buffer_under_slew",
@@ -2257,7 +2279,8 @@ int RepairDesign::metersToDbu(double dist) const
 void RepairDesign::printProgress(int iteration,
                                  bool force,
                                  bool end,
-                                 int repaired_net_count) const
+                                 int repaired_net_count,
+                                 int total_vertices) const
 {
   const bool start = iteration == 0;
 
@@ -2271,7 +2294,7 @@ void RepairDesign::printProgress(int iteration,
   }
 
   if (iteration % print_interval_ == 0 || force || end) {
-    const int nets_left = resizer_->level_drvr_vertices_.size() - iteration;
+    const int nets_left = total_vertices - iteration;
 
     std::string itr_field = fmt::format("{}", iteration);
     if (end) {
@@ -2329,15 +2352,21 @@ void RepairDesign::reportViolationCounters(bool invalidate_driver_vertices,
                   "Inserted {} buffers in {} nets.",
                   inserted_buffer_count_,
                   repaired_net_count);
-    if (invalidate_driver_vertices) {
-      resizer_->level_drvr_vertices_valid_ = false;
-    }
   }
 }
 
 void RepairDesign::setDebugGraphics(std::shared_ptr<ResizerObserver> graphics)
 {
   graphics_ = std::move(graphics);
+}
+
+float RepairDesign::getSlewRCFactor()
+{
+  if (!slew_rc_factor_.has_value()) {
+    init();
+  }
+  assert(slew_rc_factor_.has_value());
+  return *slew_rc_factor_;
 }
 
 }  // namespace rsz

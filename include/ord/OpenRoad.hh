@@ -3,8 +3,6 @@
 
 #pragma once
 
-#include <memory>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -114,7 +112,7 @@ class ICeWall;
 
 namespace utl {
 class Logger;
-class CallBackHandler;
+class ServiceRegistry;
 }  // namespace utl
 
 namespace dst {
@@ -130,6 +128,10 @@ class Dft;
 
 namespace est {
 class EstimateParasitics;
+}
+
+namespace web {
+class WebServer;
 }
 
 namespace ord {
@@ -153,7 +155,7 @@ class OpenRoad
 
   Tcl_Interp* tclInterp() { return tcl_interp_; }
   utl::Logger* getLogger() { return logger_; }
-  utl::CallBackHandler* getCallBackHandler() { return callback_handler_; }
+  utl::ServiceRegistry* getServiceRegistry() { return service_registry_; }
   odb::dbDatabase* getDb() { return db_; }
   sta::dbSta* getSta() { return sta_; }
   sta::dbNetwork* getDbNetwork();
@@ -186,6 +188,7 @@ class OpenRoad
   {
     return estimate_parasitics_;
   }
+  web::WebServer* getWebServer() { return web_server_; }
 
   // Return the bounding box of the db rows.
   odb::Rect getCore();
@@ -290,7 +293,8 @@ class OpenRoad
   stt::SteinerTreeBuilder* stt_builder_ = nullptr;
   dft::Dft* dft_ = nullptr;
   est::EstimateParasitics* estimate_parasitics_ = nullptr;
-  utl::CallBackHandler* callback_handler_ = nullptr;
+  web::WebServer* web_server_ = nullptr;
+  utl::ServiceRegistry* service_registry_ = nullptr;
 
   int threads_ = 1;
 

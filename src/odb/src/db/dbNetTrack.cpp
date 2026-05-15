@@ -14,12 +14,15 @@
 #include <cstdint>
 
 #include "dbBlock.h"
+#include "odb/dbSet.h"
+#include "odb/geom.h"
 // User Code End Includes
 namespace odb {
 template class dbTable<_dbNetTrack>;
 
 bool _dbNetTrack::operator==(const _dbNetTrack& rhs) const
 {
+  // NOLINTBEGIN(readability-simplify-boolean-expr)
   if (net_ != rhs.net_) {
     return false;
   }
@@ -34,6 +37,7 @@ bool _dbNetTrack::operator==(const _dbNetTrack& rhs) const
   }
 
   return true;
+  // NOLINTEND(readability-simplify-boolean-expr)
 }
 
 bool _dbNetTrack::operator<(const _dbNetTrack& rhs) const

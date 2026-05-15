@@ -27,7 +27,7 @@ DbvData DbvParser::parseFile(const std::string& filename)
   current_file_path_ = filename;
   std::ifstream file(filename);
   if (!file.is_open()) {
-    logError("3DBV Parser Error: Cannot open file: " + filename);
+    logError("Cannot open file");
   }
 
   std::stringstream buffer;
@@ -183,6 +183,13 @@ void DbvParser::parseChiplet(ChipletDef& chiplet,
       extractValue(
           chiplet_node["external"], "DEF_file", chiplet.external.def_file);
       chiplet.external.def_file = resolvePath(chiplet.external.def_file);
+    }
+    if (chiplet_node["external"]["verilog_file"]) {
+      extractValue(chiplet_node["external"],
+                   "verilog_file",
+                   chiplet.external.verilog_file);
+      chiplet.external.verilog_file
+          = resolvePath(chiplet.external.verilog_file);
     }
   }
 }

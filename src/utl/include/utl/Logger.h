@@ -46,6 +46,7 @@ class Progress;
 #define FOREACH_TOOL(X) \
   X(ANT)                \
   X(CGT)                \
+  X(CHK)                \
   X(CTS)                \
   X(CUT)                \
   X(DFT)                \
@@ -78,7 +79,8 @@ class Progress;
   X(TST)                \
   X(UKN)                \
   X(UPF)                \
-  X(UTL)
+  X(UTL)                \
+  X(WEB)
 
 #define GENERATE_ENUM(ENUM) ENUM,
 #define GENERATE_STRING(STRING) #STRING,
@@ -167,10 +169,8 @@ class Logger
   {
     error_count_++;
     log(tool, spdlog::level::err, id, message, args...);
-    char tool_id[32];
-    sprintf(tool_id, "%s-%04d", tool_names_[tool], id);
     // Exception should be caught by swig error handler.
-    throw std::runtime_error(tool_id);
+    throw std::runtime_error(fmt::format("{}-{:04}", tool_names_[tool], id));
   }
 
   template <typename... Args>
@@ -227,6 +227,7 @@ class Logger
   void startPrometheusEndpoint(uint16_t port);
   std::shared_ptr<PrometheusRegistry> getRegistry();
   bool isPrometheusServerReadyToServe();
+  bool hasPrometheusServerStartupFailed();
   uint16_t getPrometheusPort();
 
   void suppressMessage(ToolId tool, int id);

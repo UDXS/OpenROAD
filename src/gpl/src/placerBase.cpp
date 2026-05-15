@@ -507,7 +507,7 @@ void Pin::updateCoordi(odb::dbBTerm* bTerm, utl::Logger* logger)
   Rect bbox = bTerm->getBBox();
   if (bbox.isInverted()) {
     logger->error(
-        GPL, 1, "{} toplevel port is not placed.", bTerm->getConstName());
+        GPL, 326, "{} toplevel port is not placed.", bTerm->getConstName());
   }
 
   // Just center
@@ -617,7 +617,7 @@ void Net::updateBox(bool skipIoMode)
     uy_ = std::max(box->yMax(), uy_);
   }
 
-  if (skipIoMode == false) {
+  if (!skipIoMode) {
     for (dbBTerm* bTerm : net_->getBTerms()) {
       for (dbBPin* bPin : bTerm->getBPins()) {
         Rect bbox = bPin->getBBox();
@@ -751,6 +751,7 @@ PlacerBaseCommon::~PlacerBaseCommon()
 
 void PlacerBaseCommon::init()
 {
+  log_->info(GPL, 1, "---- Initialize GPL Main Data Structures");
   log_->info(GPL, 2, "DBU: {}", db_->getTech()->getDbUnitsPerMicron());
 
   dbBlock* block = db_->getChip()->getBlock();
@@ -855,13 +856,11 @@ void PlacerBaseCommon::init()
 
   log_->info(GPL,
              36,
-             format_label_um2,
-             "Movable instances area:",
+             "Movable instances area:     {:10.3f} um^2",
              block->dbuAreaToMicrons(movable_area));
   log_->info(GPL,
              37,
-             format_label_um2,
-             "Total instances area:",
+             "Total instances area:       {:10.3f} um^2",
              block->dbuAreaToMicrons(total_area));
 
   double avg_density
@@ -908,8 +907,7 @@ void PlacerBaseCommon::init()
 
   log_->info(GPL,
              35,
-             format_label_um2,
-             "Pin density area adjust:",
+             "Pin density area adjust:    {:10.3f} um^2",
              block->dbuAreaToMicrons(total_adjustment_area));
 
   instMap_.reserve(instStor_.size());
@@ -945,7 +943,7 @@ void PlacerBaseCommon::init()
         pinStor_.push_back(temp_pin);
       }
 
-      if (pbVars_.skipIoMode == false) {
+      if (!pbVars_.skipIoMode) {
         for (dbBTerm* bTerm : db_net->getBTerms()) {
           Pin temp_pin(bTerm, log_);
           temp_pin.setNet(temp_net_ptr);
@@ -990,7 +988,7 @@ void PlacerBaseCommon::init()
     for (dbITerm* iTerm : pb_net.getDbNet()->getITerms()) {
       pb_net.addPin(dbToPb(iTerm));
     }
-    if (pbVars_.skipIoMode == false) {
+    if (!pbVars_.skipIoMode) {
       for (dbBTerm* bTerm : pb_net.getDbNet()->getBTerms()) {
         pb_net.addPin(dbToPb(bTerm));
       }
@@ -1069,6 +1067,7 @@ PlacerBase::PlacerBase() = default;
 PlacerBase::PlacerBase(odb::dbDatabase* db,
                        std::shared_ptr<PlacerBaseCommon> pbCommon,
                        utl::Logger* log,
+                       bool check_density,
                        odb::dbGroup* group)
     : PlacerBase()
 {
@@ -1078,9 +1077,9 @@ PlacerBase::PlacerBase(odb::dbDatabase* db,
   group_ = group;
   log_->info(GPL,
              32,
-             "Initializing region: {}",
+             "---- Initialize Region: {}",
              (group_ == nullptr) ? "Top-level" : group_->getName());
-  init();
+  init(check_density);
 }
 
 PlacerBase::~PlacerBase()
@@ -1088,7 +1087,7 @@ PlacerBase::~PlacerBase()
   reset();
 }
 
-void PlacerBase::init()
+void PlacerBase::init(bool check_density)
 {
   die_ = pbCommon_->getDie();
   if (group_ != nullptr) {
@@ -1180,7 +1179,7 @@ void PlacerBase::init()
     pb_insts_.push_back(&inst);
   }
 
-  printInfo();
+  printInfo(check_density);
 }
 
 // Use dummy instance to fill unusable sites.  Sites are unusable
@@ -1322,6 +1321,38 @@ void PlacerBase::initInstsForUnusableSites()
       }
     }
 
+    if (inst->isMacro() && inst->dbInst()->getHalo() != nullptr) {
+      Rect halo = inst->dbInst()->getTransformedHalo();
+      Rect box = inst->dbInst()->getBBox()->getBox();
+
+      std::pair<int, int> pairX = getMinMaxIdx(box.xMin() - halo.xMin(),
+                                               box.xMax() + halo.xMax(),
+                                               die_.coreLx(),
+                                               siteSizeX_,
+                                               0,
+                                               siteCountX);
+      std::pair<int, int> pairY = getMinMaxIdx(box.yMin() - halo.yMin(),
+                                               box.yMax() + halo.yMax(),
+                                               die_.coreLy(),
+                                               siteSizeY_,
+                                               0,
+                                               siteCountY);
+
+      for (int i = pairX.first; i < pairX.second; i++) {
+        for (int j = pairY.first; j < pairY.second; j++) {
+          siteGrid[(j * siteCountX) + i] = Blocked;
+          debugPrint(log_,
+                     GPL,
+                     "dummies",
+                     1,
+                     "Blocking site at ({}, {}) due to fixed macro {} halo.",
+                     i,
+                     j,
+                     db_inst->getName());
+        }
+      }
+    }
+
     std::pair<int, int> pairX = getMinMaxIdx(
         inst->lx(), inst->ux(), die_.coreLx(), siteSizeX_, 0, siteCountX);
     std::pair<int, int> pairY = getMinMaxIdx(
@@ -1374,27 +1405,23 @@ void PlacerBase::reset()
   nonPlaceInsts_.clear();
 }
 
-void PlacerBase::printInfo() const
+void PlacerBase::printInfo(bool check_density) const
 {
   dbBlock* block = db_->getChip()->getBlock();
   log_->info(GPL,
              6,
-             format_label_int,
-             "Number of instances:",
+             "Number of instances:        {:10}",
              placeInsts_.size() + fixedInsts_.size() + dummyInsts_.size());
-  log_->info(
-      GPL, 7, format_label_int, "Movable instances:", placeInsts_.size());
-  log_->info(GPL, 8, format_label_int, "Fixed instances:", fixedInsts_.size());
-  log_->info(GPL, 9, format_label_int, "Dummy instances:", dummyInsts_.size());
+  log_->info(GPL, 7, "Movable instances:          {:10}", placeInsts_.size());
+  log_->info(GPL, 8, "Fixed instances:            {:10}", fixedInsts_.size());
+  log_->info(GPL, 9, "Dummy instances:            {:10}", dummyInsts_.size());
   log_->info(GPL,
              10,
-             format_label_int,
-             "Number of nets:",
+             "Number of nets:             {:10}",
              pbCommon_->getNets().size());
   log_->info(GPL,
              11,
-             format_label_int,
-             "Number of pins:",
+             "Number of pins:             {:10}",
              pbCommon_->getPins().size());
 
   log_->info(GPL,
@@ -1419,8 +1446,7 @@ void PlacerBase::printInfo() const
 
   log_->info(GPL,
              16,
-             format_label_um2,
-             "Core area:",
+             "Core area:                  {:10.3f} um^2",
              block->dbuAreaToMicrons(die_.coreArea()));
   log_->info(GPL,
              14,
@@ -1428,35 +1454,30 @@ void PlacerBase::printInfo() const
              (group_ != nullptr) ? group_->getName() : "top-level");
   log_->info(GPL,
              15,
-             format_label_um2,
-             "Region area:",
+             "Region area:                {:10.3f} um^2",
              block->dbuAreaToMicrons(region_area_));
   log_->info(GPL,
              17,
-             format_label_um2,
-             "Fixed instances area:",
+             "Fixed instances area:       {:10.3f} um^2",
              block->dbuAreaToMicrons(nonPlaceInstsArea_));
 
   log_->info(GPL,
              18,
-             format_label_um2,
-             "Movable instances area:",
+             "Movable instances area:     {:10.3f} um^2",
              block->dbuAreaToMicrons(placeInstsArea_));
   log_->info(GPL, 19, "{:27} {:10.3f} %", "Utilization:", util);
 
   log_->info(GPL,
              20,
-             format_label_um2,
-             "Standard cells area:",
+             "Standard cells area:        {:10.3f} um^2",
              block->dbuAreaToMicrons(stdInstsArea_));
 
   log_->info(GPL,
              21,
-             format_label_um2,
-             "Large instances area:",
+             "Large instances area:       {:10.3f} um^2",
              block->dbuAreaToMicrons(macroInstsArea_));
 
-  if (util >= 100.1) {
+  if (check_density && util >= 100.1) {
     log_->error(GPL, 301, "Utilization {:.3f} % exceeds 100%.", util);
   }
 }
@@ -1499,7 +1520,7 @@ static bool isCoreAreaOverlap(Die& die, Instance& inst)
       rectLy = std::max(die.coreLy(), inst.ly()),
       rectUx = std::min(die.coreUx(), inst.ux()),
       rectUy = std::min(die.coreUy(), inst.uy());
-  return !(rectLx >= rectUx || rectLy >= rectUy);
+  return rectLx < rectUx && rectLy < rectUy;
 }
 
 static int64_t getOverlapWithCoreArea(Die& die, Instance& inst)

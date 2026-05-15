@@ -5,6 +5,7 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("//bazel:python_wrap_cc.bzl", "python_wrap_cc")
 load("//bazel:tcl_encode_or.bzl", "tcl_encode")
 load("//bazel:tcl_wrap_cc.bzl", "tcl_wrap_cc")
+load("//test:regression.bzl", "messages_txt")
 
 package(
     default_visibility = ["//:__subpackages__"],
@@ -53,11 +54,11 @@ cc_library(
         "include",
     ],
     deps = [
-        "//src/odb",
+        "//src/odb/src/db",
         "//src/utl",
         "@boost.heap",
         "@boost.multi_array",
-        "@com_github_quantamhd_lemon//:lemon",
+        "@coin-or-lemon//:lemon",
     ],
 )
 
@@ -84,11 +85,10 @@ cc_library(
         ":stt",
         "//:ord",
         "//src/gui",
-        "//src/odb",
+        "//src/odb/src/db",
         "//src/utl",
-        "@boost.multi_array",
         "@boost.stacktrace",
-        "@tk_tcl//:tcl",
+        "@tcl_lang//:tcl",
     ],
 )
 
@@ -129,4 +129,17 @@ python_wrap_cc(
     swig_includes = [
         "include",
     ],
+)
+
+filegroup(
+    name = "doc_files",
+    srcs = [
+        "README.md",
+        "src/SteinerTreeBuilder.tcl",
+    ],
+    visibility = ["//src/stt/test:__pkg__"],
+)
+
+messages_txt(
+    visibility = ["//src/stt/test:__pkg__"],
 )

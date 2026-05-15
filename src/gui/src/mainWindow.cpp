@@ -44,6 +44,7 @@
 #include "dbDescriptors.h"
 #include "displayControls.h"
 #include "drcWidget.h"
+#include "findDialog.h"
 #include "globalConnectDialog.h"
 #include "gotoDialog.h"
 #include "gui/gui.h"
@@ -51,10 +52,12 @@
 #include "helpWidget.h"
 #include "highlightGroupDialog.h"
 #include "inspector.h"
+#include "label.h"
 #include "layoutTabs.h"
 #include "layoutViewer.h"
 #include "odb/db.h"
 #include "odb/dbObject.h"
+#include "ruler.h"
 #include "scriptWidget.h"
 #include "selectHighlightWindow.h"
 #include "sta/Liberty.hh"
@@ -542,7 +545,7 @@ void MainWindow::setBlock(odb::dbBlock* block)
     save_->setEnabled(true);
   }
   for (auto* heat_map : Gui::get()->getHeatMaps()) {
-    heat_map->setBlock(block);
+    heat_map->setChip(block != nullptr ? block->getChip() : nullptr);
   }
   hierarchy_widget_->setBlock(block);
 }
@@ -613,8 +616,8 @@ void MainWindow::init(sta::dbSta* sta, const std::string& help_path)
   gui->registerDescriptor<DbSiteDescriptor::SpecificSite>(
       new DbSiteDescriptor(db_));
   gui->registerDescriptor<odb::dbRow*>(new DbRowDescriptor(db_));
-  gui->registerDescriptor<Ruler*>(new RulerDescriptor(rulers_, db_));
-  gui->registerDescriptor<Label*>(new LabelDescriptor(labels_, db_, logger_));
+  gui->registerDescriptor<Ruler*>(new RulerDescriptor(rulers_));
+  gui->registerDescriptor<Label*>(new LabelDescriptor(labels_, logger_));
   gui->registerDescriptor<odb::dbBlock*>(new DbBlockDescriptor(db_));
   gui->registerDescriptor<odb::dbTech*>(new DbTechDescriptor(db_));
   gui->registerDescriptor<odb::dbMetalWidthViaMap*>(
@@ -636,7 +639,7 @@ void MainWindow::init(sta::dbSta* sta, const std::string& help_path)
   gui->registerDescriptor<odb::dbCellEdgeSpacing*>(
       new DbCellEdgeSpacingDescriptor(db_));
 
-  gui->registerDescriptor<sta::Corner*>(new CornerDescriptor(sta));
+  gui->registerDescriptor<sta::Scene*>(new SceneDescriptor(sta));
   gui->registerDescriptor<sta::LibertyLibrary*>(
       new LibertyLibraryDescriptor(sta));
   gui->registerDescriptor<sta::LibertyCell*>(new LibertyCellDescriptor(sta));

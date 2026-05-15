@@ -16,11 +16,18 @@
 #include "dbTable.h"
 #include "odb/db.h"
 #include "odb/dbSet.h"
+// User Code Begin Includes
+#include <string_view>
+#include <variant>
+
+#include "odb/dbObject.h"
+// User Code End Includes
 namespace odb {
 template class dbTable<_dbScanChain>;
 
 bool _dbScanChain::operator==(const _dbScanChain& rhs) const
 {
+  // NOLINTBEGIN(readability-simplify-boolean-expr)
   if (name_ != rhs.name_) {
     return false;
   }
@@ -44,6 +51,7 @@ bool _dbScanChain::operator==(const _dbScanChain& rhs) const
   }
 
   return true;
+  // NOLINTEND(readability-simplify-boolean-expr)
 }
 
 bool _dbScanChain::operator<(const _dbScanChain& rhs) const

@@ -18,6 +18,10 @@ namespace ord {
 pad::ICeWall* getICeWall();
 utl::Logger* getLogger();
 } // namespace ord
+
+#if TCL_MAJOR_VERSION < 9 && !defined(Tcl_Size)
+  typedef int Tcl_Size;
+#endif
 %}
 
 %import <std_vector.i>
@@ -148,6 +152,11 @@ void route_rdl_gui(bool enable)
 void route_rdl_debug_net(const char* name)
 {
   ord::getICeWall()->routeRDLDebugNet(name);
+}
+
+void route_rdl_debug_pin(const char* name)
+{
+  ord::getICeWall()->routeRDLDebugPin(name);
 }
 
 odb::dbRow* get_row(const char* name)

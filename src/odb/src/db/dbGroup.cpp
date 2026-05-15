@@ -26,12 +26,16 @@
 #include "dbGroupGroundNetItr.h"
 #include "dbGroupPowerNetItr.h"
 #include "dbRegion.h"
+#include "dbVector.h"
+#include "odb/dbSet.h"
+#include "odb/dbTypes.h"
 // User Code End Includes
 namespace odb {
 template class dbTable<_dbGroup>;
 
 bool _dbGroup::operator==(const _dbGroup& rhs) const
 {
+  // NOLINTBEGIN(readability-simplify-boolean-expr)
   if (flags_.type != rhs.flags_.type) {
     return false;
   }
@@ -76,6 +80,7 @@ bool _dbGroup::operator==(const _dbGroup& rhs) const
   }
   // User Code End ==
   return true;
+  // NOLINTEND(readability-simplify-boolean-expr)
 }
 
 bool _dbGroup::operator<(const _dbGroup& rhs) const

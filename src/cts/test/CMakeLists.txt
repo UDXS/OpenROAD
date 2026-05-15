@@ -11,6 +11,7 @@ or_integration_tests(
     array_repair_clock_nets
     check_buffers
     check_buffers_blockages
+    colocated_sinks
     check_buffers_blockages_merge
     check_buffer_inference1
     check_buffer_inference2
@@ -20,6 +21,7 @@ or_integration_tests(
     check_max_fanout2
     check_max_fanout3
     check_wire_rc_cts
+    clock_buffer_footprint
     dummy_load
     find_clock
     find_clock_pad

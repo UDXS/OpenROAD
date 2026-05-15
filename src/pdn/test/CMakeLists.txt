@@ -27,6 +27,7 @@ or_integration_tests(
     core_grid_auto_domain
     core_grid_auto_domain_multiple_nets
     core_grid_bad_metal_specs
+    core_grid_bad_metal_specs_no_grid
     core_grid_check_connect_layers
     core_grid_check_connect_layers_at_setup
     core_grid_cut_pitch
@@ -78,6 +79,7 @@ or_integration_tests(
     macros_cells
     macros_cells_dont_touch
     macros_cells_extend_boundary
+    macros_cells_halo_blocking
     macros_cells_no_grid
     macros_cells_not_fixed
     macros_cells_orient

@@ -3,41 +3,50 @@
 
 #pragma once
 
-#include "odb/db.h"
-#include "odb/geom.h"
-#include "unfoldedModel.h"
-#include "utl/Logger.h"
+namespace utl {
+class Logger;
+}
+
+namespace sta {
+class Sta;
+}
 
 namespace odb {
-class dbChip;
+class dbDatabase;
+class UnfoldedModel;
 class dbMarkerCategory;
+
+struct MatingSurfaces
+{
+  bool valid;
+  int top_z;
+  int bot_z;
+};
 
 class Checker
 {
  public:
-  Checker(utl::Logger* logger);
+  Checker(utl::Logger* logger, dbDatabase* db);
   ~Checker() = default;
-  void check(odb::dbChip* chip);
+  void check();
 
  private:
-  void checkFloatingChips(const UnfoldedModel& model,
-                          dbMarkerCategory* category);
-  void checkOverlappingChips(const UnfoldedModel& model,
-                             dbMarkerCategory* category);
-  void checkConnectionRegions(const UnfoldedModel& model,
-                              dbChip* chip,
-                              dbMarkerCategory* category);
-  void checkBumpPhysicalAlignment(const UnfoldedModel& model,
-                                  dbMarkerCategory* category);
-  void checkNetConnectivity(const UnfoldedModel& model,
-                            dbChip* chip,
-                            dbMarkerCategory* category);
-
-  bool isOverlapFullyInConnections(const UnfoldedChip* chip1,
-                                   const UnfoldedChip* chip2,
-                                   const Cuboid& overlap) const;
-
+  void checkLogicalConnectivity(dbMarkerCategory* top_cat,
+                                const UnfoldedModel* model);
+  void checkFloatingChips(dbMarkerCategory* top_cat,
+                          const UnfoldedModel* model);
+  void checkOverlappingChips(dbMarkerCategory* top_cat,
+                             const UnfoldedModel* model);
+  void checkInternalExtUsage(dbMarkerCategory* top_cat,
+                             const UnfoldedModel* model);
+  void checkConnectionRegions(dbMarkerCategory* top_cat,
+                              const UnfoldedModel* model);
+  void checkBumpPhysicalAlignment(dbMarkerCategory* top_cat,
+                                  const UnfoldedModel* model);
+  void checkNetConnectivity(dbMarkerCategory* top_cat,
+                            const UnfoldedModel* model);
   utl::Logger* logger_;
+  dbDatabase* db_;
 };
 
 }  // namespace odb

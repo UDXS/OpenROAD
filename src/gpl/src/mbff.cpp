@@ -3,9 +3,6 @@
 
 #include "mbff.h"
 
-#include <lemon/list_graph.h>
-#include <lemon/network_simplex.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -22,6 +19,10 @@
 #include "AbstractGraphics.h"
 #include "db_sta/dbNetwork.hh"
 #include "db_sta/dbSta.hh"
+#include "lemon/core.h"
+#include "lemon/list_graph.h"
+#include "lemon/network_simplex.h"
+#include "odb/PtrSetMap.h"
 #include "odb/db.h"
 #include "odb/dbTransform.h"
 #include "odb/dbTypes.h"
@@ -29,26 +30,32 @@
 #include "omp.h"
 #include "ortools/linear_solver/linear_solver.h"
 #include "ortools/sat/cp_model.h"
+#include "ortools/util/sorted_interval_list.h"
 #include "rsz/Resizer.hh"
 #include "sta/ClkNetwork.hh"
+#include "sta/ConcreteLibrary.hh"
 #include "sta/ExceptionPath.hh"
 #include "sta/FuncExpr.hh"
 #include "sta/Fuzzy.hh"
 #include "sta/Graph.hh"
 #include "sta/GraphDelayCalc.hh"
 #include "sta/InputDrive.hh"
+#include "sta/InternalPower.hh"
+#include "sta/LeakagePower.hh"
 #include "sta/Liberty.hh"
 #include "sta/MinMax.hh"
 #include "sta/Path.hh"
-#include "sta/PathAnalysisPt.hh"
 #include "sta/PathEnd.hh"
 #include "sta/PathExpanded.hh"
 #include "sta/PortDirection.hh"
 #include "sta/PowerClass.hh"
 #include "sta/Sdc.hh"
+#include "sta/SdcClass.hh"
 #include "sta/Search.hh"
 #include "sta/SearchClass.hh"
 #include "sta/Sequential.hh"
+#include "sta/StringUtil.hh"
+#include "sta/TableModel.hh"
 #include "utl/Logger.h"
 
 namespace gpl {
@@ -199,9 +206,9 @@ bool MBFF::ClockOn(dbInst* inst)
 {
   const sta::Cell* cell = network_->dbToSta(inst->getMaster());
   const sta::LibertyCell* lib_cell = getLibertyCell(cell);
-  for (sta::Sequential* seq : lib_cell->sequentials()) {
-    const sta::FuncExpr* left = seq->clock()->left();
-    const sta::FuncExpr* right = seq->clock()->right();
+  for (const sta::Sequential& seq : lib_cell->sequentials()) {
+    const sta::FuncExpr* left = seq.clock()->left();
+    const sta::FuncExpr* right = seq.clock()->right();
     // !CLK
     if (left && !right) {
       return false;
@@ -226,11 +233,11 @@ bool MBFF::IsDPin(dbITerm* iterm)
     return false;
   }
 
-  for (const sta::Sequential* seq : lib_cell->sequentials()) {
-    if (seq->clear() && seq->clear()->hasPort(lib_port)) {
+  for (const sta::Sequential& seq : lib_cell->sequentials()) {
+    if (seq.clear() && seq.clear()->hasPort(lib_port)) {
       return false;
     }
-    if (seq->preset() && seq->preset()->hasPort(lib_port)) {
+    if (seq.preset() && seq.preset()->hasPort(lib_port)) {
       return false;
     }
   }
@@ -247,24 +254,18 @@ int MBFF::GetNumD(dbInst* inst)
   const sta::Cell* cell = network_->dbToSta(inst->getMaster());
   const sta::LibertyCell* lib_cell = getLibertyCell(cell);
 
-  for (sta::Sequential* seq : lib_cell->sequentials()) {
-    const sta::FuncExpr* data = seq->data();
-    sta::FuncExprPortIterator port_itr(data);
-    while (port_itr.hasNext()) {
-      const sta::LibertyPort* port = port_itr.next();
-      if (port != nullptr) {
-        dbMTerm* mterm = network_->staToDb(port);
-        if (mterm == nullptr) {
-          continue;
-        }
-        dbITerm* iterm = inst->getITerm(mterm);
-        if (iterm == nullptr) {
-          continue;
-        }
-        cnt_d += !(IsScanIn(iterm) || IsScanEnable(iterm));
-      } else {
-        break;
+  for (const sta::Sequential& seq : lib_cell->sequentials()) {
+    const sta::FuncExpr* data = seq.data();
+    for (auto port : data->ports()) {
+      dbMTerm* mterm = network_->staToDb(port);
+      if (mterm == nullptr) {
+        continue;
       }
+      dbITerm* iterm = inst->getITerm(mterm);
+      if (iterm == nullptr) {
+        continue;
+      }
+      cnt_d += !(IsScanIn(iterm) || IsScanEnable(iterm));
     }
   }
 
@@ -285,8 +286,8 @@ bool MBFF::IsInvertingQPin(dbITerm* iterm)
   const sta::LibertyCell* lib_cell = getLibertyCell(cell);
 
   std::set<std::string> invert;
-  for (const sta::Sequential* seq : lib_cell->sequentials()) {
-    const sta::LibertyPort* output_inv = seq->outputInv();
+  for (const sta::Sequential& seq : lib_cell->sequentials()) {
+    const sta::LibertyPort* output_inv = seq.outputInv();
     invert.insert(output_inv->name());
   }
 
@@ -325,8 +326,8 @@ bool MBFF::HasClear(dbInst* inst)
 {
   const sta::Cell* cell = network_->dbToSta(inst->getMaster());
   const sta::LibertyCell* lib_cell = getLibertyCell(cell);
-  for (sta::Sequential* seq : lib_cell->sequentials()) {
-    if (seq->clear()) {
+  for (const sta::Sequential& seq : lib_cell->sequentials()) {
+    if (seq.clear()) {
       return true;
     }
   }
@@ -352,8 +353,8 @@ bool MBFF::IsClearPin(dbITerm* iterm)
   }
 
   // Check the lib cell if the port is a clear.
-  for (const sta::Sequential* seq : lib_cell->sequentials()) {
-    if (seq->clear() && seq->clear()->hasPort(lib_port)) {
+  for (const sta::Sequential& seq : lib_cell->sequentials()) {
+    if (seq.clear() && seq.clear()->hasPort(lib_port)) {
       return true;
     }
   }
@@ -374,8 +375,8 @@ bool MBFF::IsClearPin(dbITerm* iterm)
     return false;
   }
 
-  for (const sta::Sequential* seq : test_cell->sequentials()) {
-    if (seq->clear() && seq->clear()->hasPort(test_lib_port)) {
+  for (const sta::Sequential& seq : test_cell->sequentials()) {
+    if (seq.clear() && seq.clear()->hasPort(test_lib_port)) {
       return true;
     }
   }
@@ -387,8 +388,8 @@ bool MBFF::HasPreset(dbInst* inst)
 {
   const sta::Cell* cell = network_->dbToSta(inst->getMaster());
   const sta::LibertyCell* lib_cell = getLibertyCell(cell);
-  for (const sta::Sequential* seq : lib_cell->sequentials()) {
-    if (seq->preset()) {
+  for (const sta::Sequential& seq : lib_cell->sequentials()) {
+    if (seq.preset()) {
       return true;
     }
   }
@@ -414,8 +415,8 @@ bool MBFF::IsPresetPin(dbITerm* iterm)
   }
 
   // Check the lib cell if the port is a preset.
-  for (const sta::Sequential* seq : lib_cell->sequentials()) {
-    if (seq->preset() && seq->preset()->hasPort(lib_port)) {
+  for (const sta::Sequential& seq : lib_cell->sequentials()) {
+    if (seq.preset() && seq.preset()->hasPort(lib_port)) {
       return true;
     }
   }
@@ -436,8 +437,8 @@ bool MBFF::IsPresetPin(dbITerm* iterm)
     return false;
   }
 
-  for (const sta::Sequential* seq : test_cell->sequentials()) {
-    if (seq->preset() && seq->preset()->hasPort(test_lib_port)) {
+  for (const sta::Sequential& seq : test_cell->sequentials()) {
+    if (seq.preset() && seq.preset()->hasPort(test_lib_port)) {
       return true;
     }
   }
@@ -620,13 +621,13 @@ MBFF::PortName MBFF::PortType(const sta::LibertyPort* lib_port, dbInst* inst)
 
   const sta::Cell* cell = network_->dbToSta(inst->getMaster());
   const sta::LibertyCell* lib_cell = getLibertyCell(cell);
-  for (const sta::Sequential* seq : lib_cell->sequentials()) {
+  for (const sta::Sequential& seq : lib_cell->sequentials()) {
     // function
-    if (sta::LibertyPort::equiv(lib_port, seq->output())) {
+    if (sta::LibertyPort::equiv(lib_port, seq.output())) {
       return func;
     }
     // inverting function
-    if (sta::LibertyPort::equiv(lib_port, seq->outputInv())) {
+    if (sta::LibertyPort::equiv(lib_port, seq.outputInv())) {
       return ifunc;
     }
   }
@@ -645,10 +646,10 @@ bool MBFF::IsSame(const sta::FuncExpr* expr1,
     return true;
   }
   if (expr1 && expr2 && expr1->op() == expr2->op()) {
-    if (expr1->op() == sta::FuncExpr::op_port) {
+    if (expr1->op() == sta::FuncExpr::Op::port) {
       return PortType(expr1->port(), inst1) == PortType(expr2->port(), inst2);
     }
-    if (expr1->op() == sta::FuncExpr::op_not) {
+    if (expr1->op() == sta::FuncExpr::Op::not_) {
       return IsSame(expr1->left(), inst1, expr2->left(), inst2);
     }
     return IsSame(expr1->left(), inst1, expr2->left(), inst2)
@@ -695,7 +696,7 @@ MBFF::Mask MBFF::GetArrayMask(dbInst* inst, const bool isTray)
   const sta::LibertyCell* lib_cell = getLibertyCell(cell);
   const auto& seqs = lib_cell->sequentials();
   if (!seqs.empty()) {
-    ret.func_idx = GetMatchingFunc(seqs.front()->data(), inst, isTray);
+    ret.func_idx = GetMatchingFunc(seqs.front().data(), inst, isTray);
   }
 
   ret.is_scan_cell = IsScanCell(inst);
@@ -714,11 +715,9 @@ MBFF::DataToOutputsMap MBFF::GetPinMapping(dbInst* tray)
   std::vector<const sta::LibertyPort*> qn_pins;
 
   // adds the input (D) pins
-  for (const sta::Sequential* seq : lib_cell->sequentials()) {
-    const sta::FuncExpr* data = seq->data();
-    sta::FuncExprPortIterator next_state_itr(data);
-    while (next_state_itr.hasNext()) {
-      const sta::LibertyPort* port = next_state_itr.next();
+  for (const sta::Sequential& seq : lib_cell->sequentials()) {
+    const sta::FuncExpr* data = seq.data();
+    for (auto port : data->ports()) {
       if (!port->hasMembers()) {
         dbMTerm* mterm = network_->staToDb(port);
         if (mterm == nullptr) {
@@ -756,11 +755,11 @@ MBFF::DataToOutputsMap MBFF::GetPinMapping(dbInst* tray)
   }
 
   DataToOutputsMap ret;
-  if (q_pins.size() && qn_pins.size()) {
+  if (!q_pins.empty() && !qn_pins.empty()) {
     for (size_t i = 0; i < d_pins.size(); i++) {
       ret[d_pins[i]] = {q_pins[i], qn_pins[i]};
     }
-  } else if (q_pins.size()) {
+  } else if (!q_pins.empty()) {
     for (size_t i = 0; i < d_pins.size(); i++) {
       ret[d_pins[i]] = {q_pins[i], nullptr};
     }
@@ -865,21 +864,32 @@ void MBFF::ModifyPinConnections(const std::vector<Flop>& flops,
       }
     }
 
-    // disconnect / reconnect iterms
+    // Classify each original iterm and record its tray-port mapping
+    // *before* disconnecting, then disconnect/reconnect and store the
+    // original pin name as a property on the tray instance.
+    const std::string orig_inst_name(insts_[flops[i].idx]->getName());
     for (dbITerm* iterm : insts_[flops[i].idx]->getITerms()) {
+      // Classify while the iterm is still connected.
+      const bool is_d = IsDPin(iterm);
+      const bool is_q = !is_d && IsQPin(iterm);
+      const bool is_qn_inv = is_q && IsInvertingQPin(iterm);
+      const std::string orig_port_name = iterm->getMTerm()->getName();
+
       dbNet* net = iterm->getNet();
       while (net) {
         iterm->disconnect();
 
         // standard pins
-        if (IsDPin(iterm)) {
-          tray_inst[tray_idx]->findITerm(d_pin->name())->connect(net);
+        if (is_d) {
+          tray_inst[tray_idx]->findITerm(d_pin->name().c_str())->connect(net);
         }
-        if (IsQPin(iterm)) {
-          if (IsInvertingQPin(iterm)) {
-            tray_inst[tray_idx]->findITerm(qn_pin->name())->connect(net);
+        if (is_q) {
+          if (is_qn_inv) {
+            tray_inst[tray_idx]
+                ->findITerm(qn_pin->name().c_str())
+                ->connect(net);
           } else {
-            tray_inst[tray_idx]->findITerm(q_pin->name())->connect(net);
+            tray_inst[tray_idx]->findITerm(q_pin->name().c_str())->connect(net);
           }
         }
         if (IsSupplyPin(iterm)) {
@@ -915,6 +925,31 @@ void MBFF::ModifyPinConnections(const std::vector<Flop>& flops,
         }
 
         net = iterm->getNet();
+      }
+
+      // Store original FF→tray pin mapping as a property on the tray
+      // instance so timing reports can display the original pin name.
+      std::string tray_port;
+      if (is_d && d_pin) {
+        tray_port = d_pin->name();
+      } else if (is_q) {
+        if (is_qn_inv && qn_pin) {
+          tray_port = qn_pin->name();
+        } else if (q_pin) {
+          tray_port = q_pin->name();
+        }
+      }
+      if (!tray_port.empty()) {
+        const std::string key = "orig_name_" + tray_port;
+        const std::string val = orig_inst_name + "/" + orig_port_name;
+        odb::dbStringProperty* prop
+            = odb::dbStringProperty::find(tray_inst[tray_idx], key.c_str());
+        if (prop) {
+          prop->setValue(val.c_str());
+        } else {
+          odb::dbStringProperty::create(
+              tray_inst[tray_idx], key.c_str(), val.c_str());
+        }
       }
     }
   }
@@ -1962,7 +1997,7 @@ void MBFF::KMeansDecomp(const std::vector<Flop>& flops,
 
   // recurse on each new cluster
   for (int i = 0; i < best_k; i++) {
-    if (nxt_clusters[i].size()) {
+    if (!nxt_clusters[i].empty()) {
       std::vector<std::vector<Flop>> R;
       KMeansDecomp(nxt_clusters[i], max_sz, R);
       for (auto& x : R) {
@@ -2111,21 +2146,164 @@ float MBFF::RunClustering(const std::vector<Flop>& flops,
   return ans;
 }
 
+float MBFF::getLeakage(odb::dbMaster* master)
+{
+  sta::Cell* cell = network_->dbToSta(master);
+  sta::LibertyCell* lib_cell = network_->libertyCell(cell);
+  sta::LibertyCell* corner_cell
+      = lib_cell->sceneCell(corner_, sta::MinMax::max());
+  float cell_leakage;
+  bool cell_leakage_exists;
+  corner_cell->leakagePower(cell_leakage, cell_leakage_exists);
+  if (cell_leakage_exists) {
+    return cell_leakage;
+  }
+
+  // Look for unconditional power
+  cell_leakage = 0;
+  for (const sta::LeakagePower& leak : corner_cell->leakagePowers()) {
+    if (leak.when()) {
+      continue;
+    }
+    cell_leakage += leak.power();
+  }
+
+  // There should be a third method here of looking at conditional
+  // power if unconditional isn't present.  However opensta doesn't
+  // keep the related_pg_pin for leakage making it impossible to do
+  // correctly.  If it did you would sum average power for each
+  // pg_pin.
+
+  if (cell_leakage == 0) {
+    log_->warn(GPL, 327, "No leakage found for {}", master->getName());
+  }
+
+  return cell_leakage;
+}
+
+float MBFF::getInternalEnergy(odb::dbInst* inst)
+{
+  odb::dbMaster* master = inst->getMaster();
+  sta::Cell* cell = network_->dbToSta(master);
+  sta::LibertyCell* lib_cell = network_->libertyCell(cell);
+  sta::LibertyCell* corner_cell
+      = lib_cell->sceneCell(corner_, sta::MinMax::max());
+  if (!corner_cell) {
+    return 0.0;
+  }
+
+  // Sum average internal energy across all pins (CK, D, Q, SE, SI, ...).
+  // For each pin, when conditions partition the input states; we average
+  // across all groups (uniform duty assumption).  This captures the full
+  // cell energy profile -- MBFF cells share SE/SI/CK structures across
+  // bits, giving substantial savings that clock-pin-only analysis misses.
+  float total_energy = 0.0;
+  for (odb::dbITerm* iterm : inst->getITerms()) {
+    if (IsSupplyPin(iterm)) {
+      continue;
+    }
+    const sta::Pin* pin = network_->dbToSta(iterm);
+    const sta::LibertyPort* port = network_->libertyPort(pin);
+    if (!port) {
+      continue;
+    }
+    const sta::LibertyPort* scene_port
+        = port->scenePort(corner_, sta::MinMax::max());
+    if (!scene_port) {
+      continue;
+    }
+    float port_energy_sum = 0.0;
+    int group_count = 0;
+    for (const sta::InternalPower* pwr :
+         corner_cell->internalPowers(scene_port)) {
+      float energy = 0.0;
+      int rf_count = 0;
+      for (const sta::RiseFall* rf : sta::RiseFall::range()) {
+        const sta::InternalPowerModel& model = pwr->model(rf);
+        const sta::TableModel* tbl = model.model();
+        if (!tbl) {
+          continue;
+        }
+        float v1 = 0, v2 = 0;
+        if (tbl->axis1()) {
+          v1 = (tbl->axis1()->min() + tbl->axis1()->max()) / 2.0f;
+        }
+        if (tbl->axis2()) {
+          v2 = (tbl->axis2()->min() + tbl->axis2()->max()) / 2.0f;
+        }
+        energy += tbl->findValue(v1, v2, 0.0f);
+        rf_count++;
+      }
+      if (rf_count > 0) {
+        port_energy_sum += energy / rf_count;
+        group_count++;
+      }
+    }
+    if (group_count > 0) {
+      const float pin_energy = port_energy_sum / group_count;
+      total_energy += pin_energy;
+      debugPrint(log_,
+                 GPL,
+                 "mbff",
+                 2,
+                 "  pin {} groups={} energy={}",
+                 port->name(),
+                 group_count,
+                 pin_energy);
+    }
+  }
+  return total_energy;
+}
+
+float MBFF::clockActivity() const
+{
+  return (clock_period_ > 0) ? (2.0 / clock_period_) : 0.0;
+}
+
+float MBFF::getClockPeriod(odb::dbInst* ff_inst)
+{
+  float period = 0.0;
+  for (odb::dbITerm* iterm : ff_inst->getITerms()) {
+    if (IsClockPin(iterm)) {
+      const sta::Pin* sta_pin = network_->dbToSta(iterm);
+      for (const sta::Clock* clk : sta_->clocks(sta_pin, corner_->mode())) {
+        if (period == 0.0 || clk->period() < period) {
+          period = clk->period();
+        }
+      }
+      break;
+    }
+  }
+  return period;
+}
+
 void MBFF::SetVars(const std::vector<Flop>& flops)
 {
   // get min height and width
   single_bit_height_ = std::numeric_limits<float>::max();
   single_bit_width_ = std::numeric_limits<float>::max();
   single_bit_power_ = std::numeric_limits<float>::max();
+  const float activity = clockActivity();
+  odb::PtrMap<dbMaster, float> energy_cache;
   for (const Flop& flop : flops) {
     dbMaster* master = insts_[flop.idx]->getMaster();
     single_bit_height_
         = std::min(single_bit_height_, master->getHeight() / multiplier_);
     single_bit_width_
         = std::min(single_bit_width_, master->getWidth() / multiplier_);
-    sta::PowerResult ff_power
-        = sta_->power(network_->dbToSta(insts_[flop.idx]), corner_);
-    single_bit_power_ = std::min(single_bit_power_, ff_power.leakage());
+    auto [it, inserted] = energy_cache.try_emplace(master, 0.0f);
+    if (inserted) {
+      it->second = getInternalEnergy(insts_[flop.idx]);
+    }
+    const float leakage = getLeakage(master);
+    const float total_power = leakage + it->second * activity;
+    // Select the single-bit cell with lowest total estimated power as
+    // the baseline.  Both leakage and internal energy must come from the
+    // same cell to avoid an artificially low baseline.
+    if (total_power < single_bit_power_) {
+      single_bit_power_ = total_power;
+      single_bit_master_ = master;
+    }
   }
 }
 
@@ -2136,6 +2314,18 @@ void MBFF::SetRatios(const Mask& array_mask)
   norm_power_.clear();
   norm_power_.push_back(1.00);
 
+  const float activity = clockActivity();
+
+  debugPrint(log_,
+             GPL,
+             "mbff",
+             1,
+             "mask: {} sb_cell: {} sb_power: {} clock_period: {}",
+             array_mask.to_string(),
+             single_bit_master_ ? single_bit_master_->getName() : "none",
+             single_bit_power_,
+             clock_period_);
+
   for (int i = 1; i < num_sizes_; i++) {
     norm_area_.push_back(std::numeric_limits<float>::max());
     norm_power_.push_back(std::numeric_limits<float>::max());
@@ -2144,8 +2334,24 @@ void MBFF::SetRatios(const Mask& array_mask)
       norm_area_[i] = (tray_area_[array_mask][i]
                        / (single_bit_height_ * single_bit_width_))
                       / slot_cnt;
-      norm_power_[i]
-          = (tray_power_[array_mask][i] / slot_cnt) / single_bit_power_;
+      if (single_bit_power_ > 0) {
+        const float tray_total
+            = tray_power_[array_mask][i]
+              + tray_internal_energy_[array_mask][i] * activity;
+        norm_power_[i] = (tray_total / slot_cnt) / single_bit_power_;
+        debugPrint(log_,
+                   GPL,
+                   "mbff",
+                   1,
+                   "  {}-bit {}: tray_leakage: {} tray_internal_energy: {} "
+                   "tray_total: {} norm_power: {}",
+                   slot_cnt,
+                   best_master_[array_mask][i]->getName(),
+                   tray_power_[array_mask][i],
+                   tray_internal_energy_[array_mask][i],
+                   tray_total,
+                   norm_power_[i]);
+      }
     }
   }
 }
@@ -2153,7 +2359,7 @@ void MBFF::SetRatios(const Mask& array_mask)
 void MBFF::SeparateFlops(std::vector<std::vector<Flop>>& ffs)
 {
   // group by block clock name
-  std::map<dbNet*, std::vector<int>> clk_terms;
+  odb::PtrMap<odb::dbNet, std::vector<int>> clk_terms;
   for (size_t i = 0; i < flops_.size(); i++) {
     if (insts_[i]->isDoNotTouch()) {
       continue;
@@ -2219,8 +2425,8 @@ void MBFF::Run(const int mx_sz, const float alpha, const float beta)
   for (int i = 0; i < num_chunks; i++) {
     dbInst* ff_inst = insts_[FFs[i].back().idx];
     const Mask array_mask = GetArrayMask(ff_inst, false);
-    // do we even have trays to cluster these flops?
-    if (!best_master_[array_mask].size()) {
+    // do we even have tray candidates to cluster these flops?
+    if (!tray_candidates_.contains(array_mask)) {
       tot_ilp += (alpha * FFs[i].size());
       tray_sizes_used_[1] += FFs[i].size();
       log_->info(GPL,
@@ -2231,6 +2437,8 @@ void MBFF::Run(const int mx_sz, const float alpha, const float beta)
       continue;
     }
     any_found = true;
+    clock_period_ = getClockPeriod(ff_inst);
+    SelectBestTrays(array_mask, clockActivity());
     SetVars(FFs[i]);
     SetRatios(array_mask);
     tot_ilp += RunClustering(FFs[i], mx_sz, alpha, beta, array_mask);
@@ -2316,101 +2524,138 @@ void MBFF::ReadLibs()
       const int idx = GetBitIdx(num_slots);
       const Mask array_mask = GetArrayMask(tmp_tray, true);
 
-      debugPrint(log_,
-                 GPL,
-                 "mbff",
-                 1,
-                 "Found tray {} mask: {}",
-                 master->getName(),
-                 array_mask.to_string());
-      if (best_master_[array_mask].empty()) {
-        best_master_[array_mask].resize(num_sizes_, nullptr);
-        tray_area_[array_mask].resize(num_sizes_,
-                                      std::numeric_limits<float>::max());
-        tray_power_[array_mask].resize(num_sizes_,
-                                       std::numeric_limits<float>::max());
-        tray_width_[array_mask].resize(num_sizes_);
-        pin_mappings_[array_mask].resize(num_sizes_);
-
-        slot_to_tray_x_[array_mask].resize(num_sizes_);
-        slot_to_tray_y_[array_mask].resize(num_sizes_);
+      if (tray_candidates_[array_mask].empty()) {
+        tray_candidates_[array_mask].resize(num_sizes_);
       }
 
       const float cur_area = (master->getHeight() / multiplier_)
                              * (master->getWidth() / multiplier_);
-      sta::PowerResult tray_power
-          = sta_->power(network_->dbToSta(tmp_tray), corner_);
+      const float cur_leakage = getLeakage(tmp_tray->getMaster());
+      const float cur_internal_energy = getInternalEnergy(tmp_tray);
 
-      if (tray_area_[array_mask][idx] > cur_area) {
-        tray_area_[array_mask][idx] = cur_area;
-        tray_power_[array_mask][idx] = tray_power.leakage();
-        best_master_[array_mask][idx] = master;
-        pin_mappings_[array_mask][idx] = GetPinMapping(tmp_tray);
-        tray_width_[array_mask][idx] = master->getWidth() / multiplier_;
+      debugPrint(log_,
+                 GPL,
+                 "mbff",
+                 1,
+                 "Found tray {} mask: {} area: {} leakage: {} "
+                 "internal_energy: {}",
+                 master->getName(),
+                 array_mask.to_string(),
+                 cur_area,
+                 cur_leakage,
+                 cur_internal_energy);
 
-        // save slot info
-        tmp_tray->setLocation(0, 0);
-        tmp_tray->setPlacementStatus(odb::dbPlacementStatus::PLACED);
+      // Collect slot geometry from the temporary instance.
+      tmp_tray->setLocation(0, 0);
+      tmp_tray->setPlacementStatus(odb::dbPlacementStatus::PLACED);
 
-        slot_to_tray_x_[array_mask][idx].clear();
-        slot_to_tray_y_[array_mask][idx].clear();
+      DataToOutputsMap pin_mapping = GetPinMapping(tmp_tray);
 
-        std::vector<Point> d;
-        std::vector<Point> q;
-        std::vector<Point> qn;
+      std::vector<Point> d;
+      std::vector<Point> q;
+      std::vector<Point> qn;
 
-        for (const auto& p : pin_mappings_[array_mask][idx]) {
-          dbITerm* d_pin = tmp_tray->findITerm(p.first->name());
-          dbITerm* q_pin = (p.second.q ? tmp_tray->findITerm(p.second.q->name())
-                                       : nullptr);
-          dbITerm* qn_pin
-              = (p.second.qn ? tmp_tray->findITerm(p.second.qn->name())
-                             : nullptr);
+      for (const auto& p : pin_mapping) {
+        dbITerm* d_pin = tmp_tray->findITerm(p.first->name().c_str());
+        dbITerm* q_pin
+            = (p.second.q ? tmp_tray->findITerm(p.second.q->name().c_str())
+                          : nullptr);
+        dbITerm* qn_pin
+            = (p.second.qn ? tmp_tray->findITerm(p.second.qn->name().c_str())
+                           : nullptr);
 
-          d.push_back(Point{
-              d_pin->getBBox().xCenter() / multiplier_,
-              d_pin->getBBox().yCenter() / multiplier_,
+        d.push_back(Point{
+            d_pin->getBBox().xCenter() / multiplier_,
+            d_pin->getBBox().yCenter() / multiplier_,
+        });
+
+        if (q_pin) {
+          q.push_back(Point{
+              q_pin->getBBox().xCenter() / multiplier_,
+              q_pin->getBBox().yCenter() / multiplier_,
           });
-
-          if (q_pin) {
-            q.push_back(Point{
-                q_pin->getBBox().xCenter() / multiplier_,
-                q_pin->getBBox().yCenter() / multiplier_,
-            });
-          }
-
-          if (qn_pin) {
-            qn.push_back(Point{
-                qn_pin->getBBox().xCenter() / multiplier_,
-                qn_pin->getBBox().yCenter() / multiplier_,
-            });
-          }
         }
 
-        // slots w.r.t. bottom-left corner
-        for (int i = 0; i < num_slots; i++) {
-          if (q.size() && qn.size()) {
-            slot_to_tray_x_[array_mask][idx].push_back(
-                (std::max(d[i].x, std::max(q[i].x, qn[i].x))
-                 + std::min(d[i].x, std::min(q[i].x, qn[i].x)))
-                / 2.0);
-            slot_to_tray_y_[array_mask][idx].push_back(
-                (std::max(d[i].y, std::max(q[i].y, qn[i].y))
-                 + std::min(d[i].y, std::min(q[i].y, qn[i].y)))
-                / 2.0);
-          } else if (q.size()) {
-            slot_to_tray_x_[array_mask][idx].push_back(
-                (std::max(d[i].x, q[i].x) + std::min(d[i].x, q[i].x)) / 2.0);
-            slot_to_tray_y_[array_mask][idx].push_back(
-                (std::max(d[i].y, q[i].y) + std::min(d[i].y, q[i].y)) / 2.0);
-          } else {
-            slot_to_tray_x_[array_mask][idx].push_back(
-                (std::max(d[i].x, qn[i].x) + std::min(d[i].x, qn[i].x)) / 2.0);
-            slot_to_tray_y_[array_mask][idx].push_back(
-                (std::max(d[i].y, qn[i].y) + std::min(d[i].y, qn[i].y)) / 2.0);
-          }
+        if (qn_pin) {
+          qn.push_back(Point{
+              qn_pin->getBBox().xCenter() / multiplier_,
+              qn_pin->getBBox().yCenter() / multiplier_,
+          });
         }
       }
+
+      std::vector<float> slot_x;
+      std::vector<float> slot_y;
+      for (int i = 0; i < num_slots; i++) {
+        if (!q.empty() && !qn.empty()) {
+          slot_x.push_back((std::max(d[i].x, std::max(q[i].x, qn[i].x))
+                            + std::min(d[i].x, std::min(q[i].x, qn[i].x)))
+                           / 2.0);
+          slot_y.push_back((std::max(d[i].y, std::max(q[i].y, qn[i].y))
+                            + std::min(d[i].y, std::min(q[i].y, qn[i].y)))
+                           / 2.0);
+        } else if (!q.empty()) {
+          slot_x.push_back((d[i].x + q[i].x) / 2.0);
+          slot_y.push_back((d[i].y + q[i].y) / 2.0);
+        } else {
+          slot_x.push_back((d[i].x + qn[i].x) / 2.0);
+          slot_y.push_back((d[i].y + qn[i].y) / 2.0);
+        }
+      }
+
+      tray_candidates_[array_mask][idx].push_back(
+          TrayCandidate{master,
+                        cur_area,
+                        cur_leakage,
+                        cur_internal_energy,
+                        master->getWidth() / multiplier_,
+                        std::move(pin_mapping),
+                        std::move(slot_x),
+                        std::move(slot_y)});
+    }
+  }
+}
+
+void MBFF::SelectBestTrays(const Mask& mask, const float activity)
+{
+  auto it = tray_candidates_.find(mask);
+  if (it == tray_candidates_.end()) {
+    return;
+  }
+  const auto& candidates_per_size = it->second;
+
+  best_master_[mask].assign(num_sizes_, nullptr);
+  tray_area_[mask].assign(num_sizes_, std::numeric_limits<float>::max());
+  tray_power_[mask].assign(num_sizes_, std::numeric_limits<float>::max());
+  tray_internal_energy_[mask].assign(num_sizes_, 0.0);
+  tray_width_[mask].assign(num_sizes_, 0.0f);
+  pin_mappings_[mask].assign(num_sizes_, DataToOutputsMap{});
+  slot_to_tray_x_[mask].assign(num_sizes_, {});
+  slot_to_tray_y_[mask].assign(num_sizes_, {});
+
+  for (int idx = 0; idx < num_sizes_; idx++) {
+    const TrayCandidate* best = nullptr;
+    float best_total_power = std::numeric_limits<float>::max();
+    float best_area = std::numeric_limits<float>::max();
+    for (const TrayCandidate& cand : candidates_per_size[idx]) {
+      const float cur_total_power
+          = cand.leakage + cand.internal_energy * activity;
+      if (std::tie(best_total_power, best_area)
+          > std::tie(cur_total_power, cand.area)) {
+        best = &cand;
+        best_total_power = cur_total_power;
+        best_area = cand.area;
+      }
+    }
+    if (best) {
+      best_master_[mask][idx] = best->master;
+      tray_area_[mask][idx] = best->area;
+      tray_power_[mask][idx] = best->leakage;
+      tray_internal_energy_[mask][idx] = best->internal_energy;
+      tray_width_[mask][idx] = best->width;
+      pin_mappings_[mask][idx] = best->pin_mapping;
+      slot_to_tray_x_[mask][idx] = best->slot_x;
+      slot_to_tray_y_[mask][idx] = best->slot_y;
     }
   }
 }
@@ -2446,11 +2691,12 @@ void MBFF::ReadPaths()
   sta_->searchPreamble();
   sta_->ensureLevelized();
   sta::Search* search = sta_->search();
+  sta::StringSeq empty_group_names;
   sta::PathEndSeq path_ends = search->findPathEnds(e_from,
                                                    e_thrus,
                                                    e_to,
                                                    false,
-                                                   sta_->cmdCorner(),
+                                                   sta_->scenes(),
                                                    sta::MinMaxAll::max(),
                                                    20,
                                                    num_paths_,
@@ -2459,7 +2705,7 @@ void MBFF::ReadPaths()
                                                    -sta::INF,
                                                    sta::INF,
                                                    true,
-                                                   nullptr,
+                                                   empty_group_names,
                                                    true,
                                                    false,
                                                    false,
@@ -2514,7 +2760,7 @@ MBFF::MBFF(odb::dbDatabase* db,
       block_(db_->getChip()->getBlock()),
       sta_(sta),
       network_(sta_->getDbNetwork()),
-      corner_(sta_->cmdCorner()),
+      corner_(sta_->cmdScene()),
       graphics_(std::move(graphics)),
       log_(log),
       resizer_(resizer),
@@ -2525,6 +2771,8 @@ MBFF::MBFF(odb::dbDatabase* db,
       single_bit_height_(0.0),
       single_bit_width_(0.0),
       single_bit_power_(0.0),
+      clock_period_(0.0),
+      single_bit_master_(nullptr),
       test_idx_(-1)
 {
   graphics_->setDebugOn(debug_graphics);

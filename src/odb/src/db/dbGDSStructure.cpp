@@ -20,12 +20,14 @@
 #include "odb/dbTypes.h"
 // User Code Begin Includes
 #include "dbCommon.h"
+#include "odb/dbObject.h"
 // User Code End Includes
 namespace odb {
 template class dbTable<_dbGDSStructure>;
 
 bool _dbGDSStructure::operator==(const _dbGDSStructure& rhs) const
 {
+  // NOLINTBEGIN(readability-simplify-boolean-expr)
   if (name_ != rhs.name_) {
     return false;
   }
@@ -52,6 +54,7 @@ bool _dbGDSStructure::operator==(const _dbGDSStructure& rhs) const
   }
 
   return true;
+  // NOLINTEND(readability-simplify-boolean-expr)
 }
 
 bool _dbGDSStructure::operator<(const _dbGDSStructure& rhs) const

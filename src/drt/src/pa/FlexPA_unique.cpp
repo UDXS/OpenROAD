@@ -12,6 +12,8 @@
 
 #include "db/obj/frAccess.h"
 #include "db/obj/frInst.h"
+#include "db/obj/frMPin.h"
+#include "db/obj/frTrackPattern.h"
 #include "db/tech/frLayer.h"
 #include "distributed/frArchive.h"
 #include "frBaseTypes.h"
@@ -150,9 +152,9 @@ bool UniqueInsts::hasTrackPattern(frTrackPattern* tp,
   const frCoord low = tp->getStartCoord();
   const frCoord high = low + tp->getTrackSpacing() * (tp->getNumTracks() - 1);
   if (is_vertical_track) {
-    return !(low > box.xMax() || high < box.xMin());
+    return low <= box.xMax() && high >= box.xMin();
   }
-  return !(low > box.yMax() || high < box.yMin());
+  return low <= box.yMax() && high >= box.yMin();
 }
 
 bool UniqueInsts::isNDRInst(frInst* inst) const

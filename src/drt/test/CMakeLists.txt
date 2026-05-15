@@ -1,6 +1,7 @@
 or_integration_tests(
   "drt"
   TESTS
+    down_access_term
     drc_test
     ispd18_sample
     ispd18_sample_incr
@@ -18,3 +19,8 @@ or_integration_tests(
     gc_test
 )
 
+set_tests_properties(
+  drt.ndr_vias1.tcl
+  drt.ndr_vias2.tcl
+  PROPERTIES TIMEOUT 180
+)

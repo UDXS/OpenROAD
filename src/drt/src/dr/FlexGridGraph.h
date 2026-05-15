@@ -20,6 +20,7 @@
 #include "db/drObj/drPin.h"
 #include "db/infra/frBox.h"
 #include "db/obj/frTrackPattern.h"
+#include "db/tech/frConstraint.h"
 #include "db/tech/frLayer.h"
 #include "db/tech/frTechObject.h"
 #include "dr/FlexMazeTypes.h"
@@ -277,7 +278,7 @@ class FlexGridGraph
         }
       }
     } else {
-      correctU(x, y, z, dir);
+      correct(x, y, z, dir);
       const Node& node = nodes_[getIdx(x, y, z)];
       if (isOverrideShapeCost(x, y, z, dir)) {
         sol = 0;
@@ -304,7 +305,7 @@ class FlexGridGraph
     if (dir != frDirEnum::D && dir != frDirEnum::U) {
       return false;
     }
-    correctU(x, y, z, dir);
+    correct(x, y, z, dir);
     auto idx = getIdx(x, y, z);
     return nodes_[idx].overrideShapeCostVia;
   }
@@ -326,7 +327,7 @@ class FlexGridGraph
         sol = nodes_[idx].routeShapeCostPlanar;
       }
     } else {
-      correctU(x, y, z, dir);
+      correct(x, y, z, dir);
       auto idx = getIdx(x, y, z);
       if (consider_ndr) {
         sol = std::max(nodes_[idx].routeShapeCostVia,
@@ -355,7 +356,7 @@ class FlexGridGraph
       auto idx = getIdx(x, y, z);
       sol += nodes_[idx].markerCostPlanar;
     } else {
-      correctU(x, y, z, dir);
+      correct(x, y, z, dir);
       auto idx = getIdx(x, y, z);
       sol += nodes_[idx].markerCostVia;
     }
@@ -635,16 +636,19 @@ class FlexGridGraph
           currCost *= d;
           currCost = std::max(0, currCost);
           node.markerCostPlanar = currCost;
+          break;
         case frDirEnum::N:
           currCost = node.markerCostPlanar;
           currCost *= d;
           currCost = std::max(0, currCost);
           node.markerCostPlanar = currCost;
+          break;
         case frDirEnum::U:
           currCost = node.markerCostVia;
           currCost *= d;
           currCost = std::max(0, currCost);
           node.markerCostVia = currCost;
+          break;
         default:;
       }
     }
@@ -1161,26 +1165,9 @@ class FlexGridGraph
   {
     switch (dir) {
       case frDirEnum::W:
-        x--;
-        dir = frDirEnum::E;
-        break;
       case frDirEnum::S:
-        y--;
-        dir = frDirEnum::N;
-        break;
       case frDirEnum::D:
-        z--;
-        dir = frDirEnum::U;
-        break;
-      default:;
-    }
-  }
-  void correctU(frMIdx& x, frMIdx& y, frMIdx& z, frDirEnum& dir) const
-  {
-    switch (dir) {
-      case frDirEnum::D:
-        z--;
-        dir = frDirEnum::U;
+        reverse(x, y, z, dir);
         break;
       default:;
     }
@@ -1228,11 +1215,8 @@ class FlexGridGraph
                    frDirEnum dir) const;
   bool isValid(frMIdx x, frMIdx y, frMIdx z) const
   {
-    if (x < 0 || y < 0 || z < 0 || x >= (frMIdx) xCoords_.size()
-        || y >= (frMIdx) yCoords_.size() || z >= (frMIdx) zCoords_.size()) {
-      return false;
-    }
-    return true;
+    return x >= 0 && y >= 0 && z >= 0 && x < (frMIdx) xCoords_.size()
+           && y < (frMIdx) yCoords_.size() && z < (frMIdx) zCoords_.size();
   }
   bool isValid(frMIdx x, frMIdx y, frMIdx z, frDirEnum dir) const
   {

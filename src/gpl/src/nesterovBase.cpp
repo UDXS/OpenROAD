@@ -14,6 +14,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <unordered_map>
@@ -21,11 +22,14 @@
 #include <utility>
 #include <vector>
 
+#include "boost/polygon/polygon.hpp"
 #include "fft.h"
+#include "gpl/Replace.h"
 #include "nesterovPlace.h"
 #include "odb/db.h"
 #include "omp.h"
 #include "placerBase.h"
+#include "point.h"
 #include "utl/Logger.h"
 
 #define REPLACE_SQRT2 1.414213562373095048801L
@@ -40,8 +44,6 @@ static float calculateBiVariateNormalCDF(biNormalParameters i);
 static int64_t getOverlapArea(const Bin* bin,
                               const Instance* inst,
                               int dbu_per_micron);
-
-static int64_t getOverlapAreaUnscaled(const Bin* bin, const Instance* inst);
 
 static float getDistance(const std::vector<FloatPoint>& a,
                          const std::vector<FloatPoint>& b);
@@ -555,14 +557,14 @@ float Bin::getTargetDensity() const
   return targetDensity_;
 }
 
-float Bin::electroForceX() const
+float Bin::electroFieldX() const
 {
-  return electroForceX_;
+  return electroFieldX_;
 }
 
-float Bin::electroForceY() const
+float Bin::electroFieldY() const
 {
-  return electroForceY_;
+  return electroFieldY_;
 }
 
 float Bin::electroPhi() const
@@ -580,10 +582,10 @@ void Bin::setBinTargetDensity(float density)
   targetDensity_ = density;
 }
 
-void Bin::setElectroForce(float electroForceX, float electroForceY)
+void Bin::setElectroField(float electroFieldX, float electroFieldY)
 {
-  electroForceX_ = electroForceX;
-  electroForceY_ = electroForceY;
+  electroFieldX_ = electroFieldX;
+  electroFieldY_ = electroFieldY;
 }
 
 void Bin::setElectroPhi(float phi)
@@ -733,23 +735,19 @@ void BinGrid::initBins()
   idealBinCnt = std::max(idealBinCnt, 4);
 
   dbBlock* block = pb_->db()->getChip()->getBlock();
-  log_->info(
-      GPL, 23, format_label_float, "Placement target density:", targetDensity_);
+  log_->info(GPL, 23, "Placement target density:   {:10.4f}", targetDensity_);
   log_->info(GPL,
              24,
-             format_label_um2,
-             "Movable insts average area:",
+             "Movable insts average area: {:10.3f} um^2",
              block->dbuAreaToMicrons(averagePlaceInstArea));
   log_->info(GPL,
              25,
-             format_label_um2,
-             "Ideal bin area:",
+             "Ideal bin area:             {:10.3f} um^2",
              block->dbuAreaToMicrons(idealBinArea));
-  log_->info(GPL, 26, format_label_int, "Ideal bin count:", idealBinCnt);
+  log_->info(GPL, 26, "Ideal bin count:            {:10}", idealBinCnt);
   log_->info(GPL,
              27,
-             format_label_um2,
-             "Total bin area:",
+             "Total bin area:             {:10.3f} um^2",
              block->dbuAreaToMicrons(totalBinArea));
 
   if (!isSetBinCnt_) {
@@ -819,7 +817,7 @@ void BinGrid::initBins()
     }
   }
 
-  log_->info(GPL, 30, format_label_int, "Number of bins:", bins_.size());
+  log_->info(GPL, 30, "Number of bins:             {:10}", bins_.size());
 
   // only initialized once
   updateBinsNonPlaceArea();
@@ -832,26 +830,93 @@ void BinGrid::updateBinsNonPlaceArea()
     bin.setNonPlaceAreaUnscaled(0);
   }
 
+  using Polygon90Set = boost::polygon::polygon_90_set_data<int>;
+  using BoostRect = boost::polygon::rectangle_data<int>;
+  using boost::polygon::operators::operator+=;
+  using boost::polygon::operators::operator&=;
+
+  // For each bin, collect indices of non-place instances whose bbox
+  // overlaps it. The per-bin geometric union (which dedupes overlapping
+  // fixed macros / blockages) only depends on those instances, so we
+  // avoid copying a full design-wide polygon set per bin.
+  const auto& non_place_insts = pb_->nonPlaceInsts();
+  std::vector<std::vector<int>> bin_insts(bins_.size());
+  for (size_t i = 0; i < non_place_insts.size(); ++i) {
+    const Instance* inst = non_place_insts[i];
+    if (inst->lx() >= inst->ux() || inst->ly() >= inst->uy()) {
+      continue;
+    }
+    std::pair<int, int> pairX = getMinMaxIdxX(inst);
+    std::pair<int, int> pairY = getMinMaxIdxY(inst);
+    for (int y = pairY.first; y < pairY.second; y++) {
+      for (int x = pairX.first; x < pairX.second; x++) {
+        bin_insts[y * binCntX_ + x].push_back(static_cast<int>(i));
+      }
+    }
+  }
+
+  // Per-bin geometric union area (deduplicated across overlapping
+  // fixed instances). Drives nonPlaceAreaUnscaled and the cap below.
+  std::vector<int64_t> unionArea(bins_.size(), 0);
+  for (size_t i = 0; i < bins_.size(); ++i) {
+    const auto& touching = bin_insts[i];
+    if (touching.empty()) {
+      continue;
+    }
+    Bin& bin = bins_[i];
+    if (touching.size() == 1) {
+      // Single instance: union == clipped overlap, skip Boost.Polygon.
+      const Instance* inst = non_place_insts[touching.front()];
+      const int rectLx = std::max(bin.lx(), inst->lx());
+      const int rectLy = std::max(bin.ly(), inst->ly());
+      const int rectUx = std::min(bin.ux(), inst->ux());
+      const int rectUy = std::min(bin.uy(), inst->uy());
+      if (rectLx < rectUx && rectLy < rectUy) {
+        unionArea[i] = static_cast<int64_t>(rectUx - rectLx)
+                       * static_cast<int64_t>(rectUy - rectLy);
+      }
+    } else {
+      Polygon90Set local_set;
+      for (int idx : touching) {
+        const Instance* inst = non_place_insts[idx];
+        local_set += BoostRect(inst->lx(), inst->ly(), inst->ux(), inst->uy());
+      }
+      local_set &= BoostRect(bin.lx(), bin.ly(), bin.ux(), bin.uy());
+      unionArea[i] = boost::polygon::area(local_set);
+    }
+    // Note that nonPlaceArea should have scale-down with target
+    // density. See MS-replace paper.
+    bin.setNonPlaceAreaUnscaled(
+        static_cast<int64_t>(unionArea[i] * bin.getTargetDensity()));
+  }
+
+  // Per-macro Gaussian smoothing in getOverlapArea spreads density
+  // around the macro center; preserve that for non-overlapping cases
+  // by accumulating per-instance, then clamp at union-area * 1.10
+  // (the same headroom getOverlapArea allows for a single macro) so
+  // overlapping macros cannot exceed a single-macro contribution.
+  const int dbu_per_micron
+      = pb_->db()->getChip()->getBlock()->getDbUnitsPerMicron();
   for (auto& inst : pb_->nonPlaceInsts()) {
     std::pair<int, int> pairX = getMinMaxIdxX(inst);
     std::pair<int, int> pairY = getMinMaxIdxY(inst);
     for (int y = pairY.first; y < pairY.second; y++) {
       for (int x = pairX.first; x < pairX.second; x++) {
         Bin& bin = bins_[y * binCntX_ + x];
-
-        // Note that nonPlaceArea should have scale-down with
-        // target density.
-        // See MS-replace paper
-        //
-        bin.addNonPlaceArea(
-            getOverlapArea(
-                &bin,
-                inst,
-                pb_->db()->getChip()->getBlock()->getDbUnitsPerMicron())
-            * bin.getTargetDensity());
-        bin.addNonPlaceAreaUnscaled(getOverlapAreaUnscaled(&bin, inst)
-                                    * bin.getTargetDensity());
+        bin.addNonPlaceArea(getOverlapArea(&bin, inst, dbu_per_micron)
+                            * bin.getTargetDensity());
       }
+    }
+  }
+  for (size_t i = 0; i < bins_.size(); ++i) {
+    if (bin_insts[i].empty()) {
+      continue;
+    }
+    Bin& bin = bins_[i];
+    const int64_t cap
+        = static_cast<int64_t>(unionArea[i] * bin.getTargetDensity() * 1.10f);
+    if (bin.getNonPlaceArea() > cap) {
+      bin.setNonPlaceArea(cap);
     }
   }
 }
@@ -1108,7 +1173,7 @@ NesterovBaseCommon::NesterovBaseCommon(
     nbc_gcells_.push_back(&gCell);
     for (Instance* inst : gCell.insts()) {
       gCellMap_[inst] = &gCell;
-      db_inst_to_nbc_index_map_[inst->dbInst()] = &gCell - &gCellStor_[0];
+      db_inst_to_nbc_index_map_[inst->dbInst()] = &gCell - gCellStor_.data();
     }
   }
 
@@ -1573,7 +1638,7 @@ void NesterovBaseCommon::fixPointers()
     nbc_gcells_.push_back(&gCell);
     for (Instance* inst : gCell.insts()) {
       gCellMap_[inst] = &gCell;
-      db_inst_to_nbc_index_map_[inst->dbInst()] = &gCell - &gCellStor_[0];
+      db_inst_to_nbc_index_map_[inst->dbInst()] = &gCell - gCellStor_.data();
     }
   }
 
@@ -1891,7 +1956,7 @@ NesterovBase::NesterovBase(
   log_ = log;
   log_->info(GPL,
              33,
-             "Initializing Nesterov region: {}",
+             "---- Initialize Nesterov Region: {}",
              pb_->getGroup() ? pb_->getGroup()->getName() : "Top-level");
 
   // Set a fixed seed
@@ -1919,7 +1984,9 @@ NesterovBase::NesterovBase(
     }
 
     for (Instance* inst : gCell->insts()) {
-      inst->setLocation(pb_inst->lx() + x_offset, pb_inst->ly() + y_offset);
+      if (!inst->isLocked()) {
+        inst->setLocation(pb_inst->lx() + x_offset, pb_inst->ly() + y_offset);
+      }
     }
     gCell->updateLocations();
     nb_gcells_.emplace_back(nbc_.get(), nbc_->getGCellIndex(gCell));
@@ -2508,7 +2575,7 @@ FloatPoint NesterovBase::getDensityPreconditioner(const GCell* gCell) const
   return FloatPoint(areaVal, areaVal);
 }
 
-// get GCells' electroForcePair
+// get GCells' electroFieldPair
 // i.e. get DensityGradient with given GCell
 FloatPoint NesterovBase::getDensityGradient(const GCell* gCell) const
 {
@@ -2523,16 +2590,16 @@ FloatPoint NesterovBase::getDensityGradient(const GCell* gCell) const
       float overlapArea
           = getOverlapDensityArea(bin, gCell) * gCell->getDensityScale();
 
-      electroForce.x += overlapArea * bin.electroForceX();
-      electroForce.y += overlapArea * bin.electroForceY();
+      electroForce.x += overlapArea * bin.electroFieldX();
+      electroForce.y += overlapArea * bin.electroFieldY();
     }
   }
 
   return electroForce;
 }
 
-// Density force cals
-void NesterovBase::updateDensityForceBin()
+// Density field calls
+void NesterovBase::updateDensityFieldBin()
 {
   assert(omp_get_thread_num() == 0);
   // copy density to utilize FFT
@@ -2545,15 +2612,15 @@ void NesterovBase::updateDensityForceBin()
   // do FFT
   fft_->doFFT();
 
-  // update electroPhi and electroForce
+  // update electroPhi and electroField
   // update sumPhi_ for nesterov loop
   sumPhi_ = 0;
 #pragma omp parallel for num_threads(nbc_->getNumThreads()) \
     reduction(+ : sumPhi_)
   for (auto it = getBins().begin(); it < getBins().end(); ++it) {
     auto& bin = *it;  // old-style loop for old OpenMP
-    auto eForcePair = fft_->getElectroForce(bin.x(), bin.y());
-    bin.setElectroForce(eForcePair.first, eForcePair.second);
+    auto eFieldPair = fft_->getElectroField(bin.x(), bin.y());
+    bin.setElectroField(eFieldPair.first, eFieldPair.second);
 
     float electroPhi = fft_->getElectroPhi(bin.x(), bin.y());
     bin.setElectroPhi(electroPhi);
@@ -2616,7 +2683,7 @@ void NesterovBase::initDensity1()
   prev_hpwl_ = nbc_->getHpwl();
 
   // FFT update
-  updateDensityForceBin();
+  updateDensityFieldBin();
 
   baseWireLengthCoef_
       = npVars_->initWireLengthCoef
@@ -2676,7 +2743,7 @@ float NesterovBase::getStepLength(
 // to execute following function,
 //
 // nb_->updateGCellDensityCenterLocation(coordi); // bin update
-// nb_->updateDensityForceBin(); // bin Force update
+// nb_->updateDensityFieldBin(); // bin Field update
 //
 // nb_->updateWireLengthForceWA(wireLengthCoefX_, wireLengthCoefY_); // WL
 // update
@@ -2818,6 +2885,12 @@ void NesterovBase::updateSingleGradient(
   }
 
   GCell* gCell = nb_gcells_.at(gCellIndex);
+  if (gCell->isLocked()) {
+    wireLengthGrads[gCellIndex] = FloatPoint(0, 0);
+    densityGrads[gCellIndex] = FloatPoint(0, 0);
+    sumGrads[gCellIndex] = FloatPoint(0, 0);
+    return;
+  }
 
   wireLengthGrads[gCellIndex]
       = nbc_->getWireLengthGradientWA(gCell, wlCoeffX, wlCoeffY);
@@ -2848,6 +2921,11 @@ void NesterovBase::updateInitialPrevSLPCoordi()
 #pragma omp parallel for num_threads(nbc_->getNumThreads())
   for (size_t i = 0; i < nb_gcells_.size(); i++) {
     GCell* curGCell = nb_gcells_[i];
+
+    if (curGCell->isLocked()) {
+      prevSLPCoordi_[i] = curSLPCoordi_[i];
+      continue;
+    }
 
     float prevCoordiX
         = curSLPCoordi_[i].x
@@ -3058,6 +3136,13 @@ void NesterovBase::nesterovUpdateCoordinates(float coeff)
 
   // fill in nextCoordinates with given stepLength_
   for (size_t k = 0; k < nb_gcells_.size(); k++) {
+    GCell* curGCell = nb_gcells_[k];
+    if (curGCell->isLocked()) {
+      nextCoordi_[k] = curCoordi_[k];
+      nextSLPCoordi_[k] = curSLPCoordi_[k];
+      continue;
+    }
+
     FloatPoint nextCoordi(
         curSLPCoordi_[k].x + stepLength_ * curSLPSumGrads_[k].x,
         curSLPCoordi_[k].y + stepLength_ * curSLPSumGrads_[k].y);
@@ -3065,8 +3150,6 @@ void NesterovBase::nesterovUpdateCoordinates(float coeff)
     FloatPoint nextSLPCoordi(
         nextCoordi.x + coeff * (nextCoordi.x - curCoordi_[k].x),
         nextCoordi.y + coeff * (nextCoordi.y - curCoordi_[k].y));
-
-    GCell* curGCell = nb_gcells_[k];
 
     nextCoordi_[k]
         = FloatPoint(getDensityCoordiLayoutInsideX(curGCell, nextCoordi.x),
@@ -3079,7 +3162,7 @@ void NesterovBase::nesterovUpdateCoordinates(float coeff)
 
   // Update Density
   updateGCellDensityCenterLocation(nextSLPCoordi_);
-  updateDensityForceBin();
+  updateDensityFieldBin();
 }
 
 void NesterovBase::nesterovAdjustPhi()
@@ -3149,7 +3232,7 @@ bool NesterovBase::checkConvergence(int gpl_iter_count,
           GPL, 1001, "Global placement finished at iteration {}", final_iter);
       if (npVars_->routability_driven_mode) {
         log_->info(GPL,
-                   1003,
+                   1017,
                    "Routability mode iteration count: {}",
                    routability_gpl_iter_count);
       }
@@ -3166,14 +3249,12 @@ bool NesterovBase::checkConvergence(int gpl_iter_count,
 
     log_->info(GPL,
                1002,
-               format_label_float,
-               "Placed Cell Area",
+               "Placed Cell Area            {:10.4f}",
                block->dbuAreaToMicrons(getNesterovInstsArea()));
 
     log_->info(GPL,
                1003,
-               format_label_float,
-               "Available Free Area",
+               "Available Free Area         {:10.4f}",
                block->dbuAreaToMicrons(whiteSpaceArea_));
 
     log_->info(GPL,
@@ -3281,7 +3362,7 @@ bool NesterovBase::revertToSnapshot()
   stepLength_ = snapshotStepLength_;
 
   updateGCellDensityCenterLocation(curCoordi_);
-  updateDensityForceBin();
+  updateDensityFieldBin();
 
   isDiverged_ = false;
 
@@ -3442,7 +3523,8 @@ void NesterovBase::createCbkGCell(odb::dbInst* db_inst, size_t stor_index)
              GPL,
              "callbacks",
              2,
-             "NesterovBase: createGCell {}",
+             "NesterovBase {}: createGCell {}",
+             pb_->getGroup() ? pb_->getGroup()->getName() : "Top-level",
              db_inst->getName());
   auto gcell = nbc_->getGCellByIndex(stor_index);
   if (gcell != nullptr) {
@@ -3453,12 +3535,12 @@ void NesterovBase::createCbkGCell(odb::dbInst* db_inst, size_t stor_index)
                GPL,
                "callbacks",
                1,
-               "NesterovBase: creatGCell {}, index: {}",
+               "NesterovBase {}: createGCell {}, index: {}",
+               pb_->getGroup() ? pb_->getGroup()->getName() : "Top-level",
                db_inst->getName(),
                gcells_index);
     db_inst_to_nb_index_[db_inst] = gcells_index;
     appendParallelVectors();
-
   } else {
     debugPrint(log_,
                GPL,
@@ -3470,7 +3552,8 @@ void NesterovBase::createCbkGCell(odb::dbInst* db_inst, size_t stor_index)
 
 size_t NesterovBaseCommon::createCbkGCell(odb::dbInst* db_inst)
 {
-  debugPrint(log_, GPL, "callbacks", 2, "NBC createCbkGCell");
+  debugPrint(
+      log_, GPL, "callbacks", 2, "NBC createCbkGCell {}", db_inst->getName());
   Instance pb_inst(db_inst, pbc_.get(), log_);
 
   pb_insts_stor_.push_back(pb_inst);
@@ -3515,95 +3598,109 @@ void NesterovBaseCommon::createCbkITerm(odb::dbITerm* iTerm)
 
 // assuming fixpointers will be called later
 //  maintaining consistency in NBC::gcellStor_ and NB::gCells_
-void NesterovBase::destroyCbkGCell(odb::dbInst* db_inst)
+std::optional<std::pair<odb::dbInst*, size_t>> NesterovBase::destroyCbkGCell(
+    odb::dbInst* db_inst)
 {
   debugPrint(log_,
              GPL,
              "callbacks",
              2,
-             "NesterovBase: destroyCbkGCell {}",
+             "NesterovBase {}: destroyCbkGCell {}",
+             pb_->getGroup() ? pb_->getGroup()->getName() : "Top-level",
              db_inst->getName());
   auto db_it = db_inst_to_nb_index_.find(db_inst);
-  if (db_it != db_inst_to_nb_index_.end()) {
-    size_t last_index = nb_gcells_.size() - 1;
-    size_t gcell_index = db_it->second;
-
-    GCellHandle& handle = nb_gcells_[gcell_index];
-
-    if (handle->isFiller()) {
-      debugPrint(log_,
-                 GPL,
-                 "callbacks",
-                 1,
-                 "error: trying to destroy filler gcell during callback!");
-      return;
-    }
-
-    if (gcell_index != last_index) {
-      std::swap(nb_gcells_[gcell_index], nb_gcells_[last_index]);
-    }
-    swapAndPopParallelVectors(gcell_index, last_index);
-    nb_gcells_.pop_back();
-    db_inst_to_nb_index_.erase(db_it);
-
-    // From now on gcell_index is the index for the replacement (previous last
-    // element)
-    size_t replacer_index = gcell_index;
-    if (replacer_index != last_index) {
-      if (!nb_gcells_[replacer_index]->isFiller()) {
-        odb::dbInst* replacer_inst
-            = nb_gcells_[replacer_index]->insts()[0]->dbInst();
-        db_inst_to_nb_index_[replacer_inst] = replacer_index;
-      } else {
-        size_t filler_stor_index = nb_gcells_[replacer_index].getStorageIndex();
-        filler_stor_index_to_nb_index_[filler_stor_index] = replacer_index;
-      }
-    }
-
-    std::pair<odb::dbInst*, size_t> replacer = nbc_->destroyCbkGCell(db_inst);
-
-    if (replacer.first != nullptr) {
-      auto it = db_inst_to_nb_index_.find(replacer.first);
-      if (it != db_inst_to_nb_index_.end()) {
-        nb_gcells_[it->second].updateHandle(nbc_.get(), replacer.second);
-      } else {
-        debugPrint(log_,
-                   GPL,
-                   "callbacks",
-                   1,
-                   "warn replacer dbInst {} not found in NB map!",
-                   replacer.first->getName());
-      }
-    }
-
-  } else {
-    debugPrint(
-        log_,
-        GPL,
-        "callbacks",
-        1,
-        "warning: db_inst not found in db_inst_to_nb_index_ for instance: {}",
-        db_inst->getName());
+  if (db_it == db_inst_to_nb_index_.end()) {
+    // not found
+    return std::nullopt;
   }
+
+  const size_t last_index = nb_gcells_.size() - 1;
+  const size_t gcell_index = db_it->second;
+  debugPrint(
+      log_,
+      GPL,
+      "callbacks",
+      2,
+      "NesterovBase {}: destroyCbkGCell {}, last_index {}, gcell_index {}",
+      pb_->getGroup() ? pb_->getGroup()->getName() : "Top-level",
+      db_inst->getName(),
+      last_index,
+      gcell_index);
+
+  GCellHandle& handle = nb_gcells_[gcell_index];
+
+  if (handle->isFiller()) {
+    debugPrint(log_,
+               GPL,
+               "callbacks",
+               1,
+               "error: trying to destroy filler gcell during callback!");
+    return std::nullopt;
+  }
+
+  if (gcell_index != last_index) {
+    std::swap(nb_gcells_[gcell_index], nb_gcells_[last_index]);
+  }
+  swapAndPopParallelVectors(gcell_index, last_index);
+  nb_gcells_.pop_back();
+  db_inst_to_nb_index_.erase(db_it);
+
+  // From now on gcell_index is the index for the replacement (previous last
+  // element)
+  size_t replacer_index = gcell_index;
+  if (replacer_index != last_index) {
+    if (!nb_gcells_[replacer_index]->isFiller()) {
+      odb::dbInst* replacer_inst
+          = nb_gcells_[replacer_index]->insts()[0]->dbInst();
+      db_inst_to_nb_index_[replacer_inst] = replacer_index;
+    } else {
+      size_t filler_stor_index = nb_gcells_[replacer_index].getStorageIndex();
+      filler_stor_index_to_nb_index_[filler_stor_index] = replacer_index;
+    }
+  }
+
+  return nbc_->destroyCbkGCell(db_inst);
 }
 
-std::pair<odb::dbInst*, size_t> NesterovBaseCommon::destroyCbkGCell(
-    odb::dbInst* db_inst)
+bool NesterovBase::updateHandle(odb::dbInst* db_inst, size_t handle)
+{
+  auto it = db_inst_to_nb_index_.find(db_inst);
+  if (it == db_inst_to_nb_index_.end()) {
+    debugPrint(log_,
+               GPL,
+               "callbacks",
+               1,
+               "NesterovBase {} updateHandle: dbInst {} not found in NB map!",
+               pb_->getGroup() ? pb_->getGroup()->getName() : "Top-level",
+               db_inst->getName());
+    return false;
+  }
+  nb_gcells_[it->second].updateHandle(nbc_.get(), handle);
+  return true;
+}
+
+std::optional<std::pair<odb::dbInst*, size_t>>
+NesterovBaseCommon::destroyCbkGCell(odb::dbInst* db_inst)
 {
   auto it = db_inst_to_nbc_index_map_.find(db_inst);
   if (it == db_inst_to_nbc_index_map_.end()) {
-    log_->error(GPL,
-                307,
-                "db_inst not found in db_inst_to_NBC_index_map_ when trying to "
-                "destroy GCell on NBC");
+    debugPrint(log_,
+               GPL,
+               "callbacks",
+               1,
+               "warn db_inst ({}) not found in db_inst_to_NBC_index_map_ when "
+               "trying to "
+               "destroy GCell on NBC",
+               db_inst->getName());
+    return std::nullopt;
   }
 
   size_t index_remove = it->second;
   db_inst_to_nbc_index_map_.erase(it);
 
-  std::pair<odb::dbInst*, size_t> replacement;
   size_t last_index = gCellStor_.size() - 1;
 
+  std::optional<std::pair<odb::dbInst*, size_t>> replacement = std::nullopt;
   if (index_remove != last_index) {
     std::swap(gCellStor_[index_remove], gCellStor_[last_index]);
     std::swap(minRcCellSize_[index_remove], minRcCellSize_[last_index]);
@@ -3611,6 +3708,8 @@ std::pair<odb::dbInst*, size_t> NesterovBaseCommon::destroyCbkGCell(
     odb::dbInst* swapped_inst = gCellStor_[index_remove].insts()[0]->dbInst();
     db_inst_to_nbc_index_map_[swapped_inst] = index_remove;
     replacement = {swapped_inst, index_remove};
+  } else {
+    replacement = {nullptr, index_remove};
   }
 
   int64_t area_change = static_cast<int64_t>(gCellStor_.back().dx())
@@ -4246,20 +4345,6 @@ static int64_t getOverlapArea(const Bin* bin,
   }
   return static_cast<float>(rectUx - rectLx)
          * static_cast<float>(rectUy - rectLy);
-}
-
-static int64_t getOverlapAreaUnscaled(const Bin* bin, const Instance* inst)
-{
-  const int rectLx = std::max(bin->lx(), inst->lx());
-  const int rectLy = std::max(bin->ly(), inst->ly());
-  const int rectUx = std::min(bin->ux(), inst->ux());
-  const int rectUy = std::min(bin->uy(), inst->uy());
-
-  if (rectLx >= rectUx || rectLy >= rectUy) {
-    return 0;
-  }
-  return static_cast<int64_t>(rectUx - rectLx)
-         * static_cast<int64_t>(rectUy - rectLy);
 }
 
 // A function that does 2D integration to the density function of a

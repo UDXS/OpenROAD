@@ -20,6 +20,7 @@
 #include "boost/geometry/geometries/point_xy.hpp"
 #include "boost/geometry/geometry.hpp"
 #include "boost/geometry/index/rtree.hpp"
+#include "odb/PtrSetMap.h"
 #include "utl/Logger.h"
 // NOLINTNEXTLINE
 #include "boost/geometry/strategies/strategies.hpp"  // Required implictly by rtree
@@ -74,6 +75,20 @@ using IRDropByPoint = std::map<odb::Point, double>;
 struct GapInfo;
 struct DecapCell;
 struct IRDrop;
+
+struct GlobalSwapParams
+{
+  int passes = 2;
+  double tolerance = 0.01;
+  double tradeoff = 0.4;
+  double profiling_excess = 1.10;
+  std::vector<double> budget_multipliers{1.50, 1.25, 1.10, 1.04};
+  double area_weight = 0.4;
+  double pin_weight = 0.6;
+  double user_congestion_weight = 35.0;
+  int sampling_moves = 150;
+  int normalization_interval = 1000;
+};
 ////////////////////////////////////////////////////////////////
 
 class Opendp
@@ -92,7 +107,10 @@ class Opendp
   // max_displacment is in sites. use zero for defaults.
   void detailedPlacement(int max_displacement_x,
                          int max_displacement_y,
-                         const std::string& report_file_name = std::string(""));
+                         const std::string& report_file_name = std::string(""),
+                         bool incremental = false,
+                         bool use_negotiation = false,
+                         bool run_abacus = false);
   void reportLegalizationStats() const;
 
   void setPaddingGlobal(int left, int right);
@@ -101,6 +119,7 @@ class Opendp
   void setDebug(std::unique_ptr<dpl::DplObserver>& observer);
   void setJumpMoves(int jump_moves);
   void setIterativePlacement(bool iterative);
+  void setDeepIterativePlacement(bool deep_iterative);
 
   // Global padding.
   int padGlobalLeft() const;
@@ -115,6 +134,23 @@ class Opendp
                        bool verbose);
   void removeFillers();
   void optimizeMirroring();
+  void resetGlobalSwapParams();
+  void configureGlobalSwapParams(int passes,
+                                 double tolerance,
+                                 double tradeoff,
+                                 double area_weight,
+                                 double pin_weight,
+                                 double user_weight,
+                                 int sampling_moves,
+                                 int normalization_interval,
+                                 double profiling_excess,
+                                 const std::vector<double>& budget_multipliers);
+  const GlobalSwapParams& getGlobalSwapParams() const
+  {
+    return global_swap_params_;
+  }
+  void setExtraDplEnabled(bool enabled) { extra_dpl_enabled_ = enabled; }
+  bool isExtraDplEnabled() const { return extra_dpl_enabled_; }
 
   // Place decap cells
   void addDecapMaster(odb::dbMaster* decap_master, double decap_cap);
@@ -149,13 +185,17 @@ class Opendp
 
   // gap -> sequence of masters to fill the gap
   using GapFillers = std::vector<dbMasterSeq>;
+  // row height -> GapFillers, by implant layer
+  using GapFillersByHeight = std::map<DbuY, GapFillers>;
 
-  using MasterByImplant = std::map<odb::dbTechLayer*, dbMasterSeq>;
+  using MasterByImplant = odb::PtrMap<odb::dbTechLayer, dbMasterSeq>;
 
   using YCoordToGap = std::map<DbuY, std::vector<std::unique_ptr<GapInfo>>>;
 
   friend class OpendpTest_IsPlaced_Test;
   friend class Graphics;
+  friend class CellPlaceOrderLess;
+  friend class NegotiationLegalizer;
   void findDisplacementStats();
   DbuPt pointOffMacro(const Node& cell);
   void convertDbToCell(odb::dbInst* db_inst, Node& cell);
@@ -178,14 +218,14 @@ class Opendp
   void initPlacementDRC();
 
   std::string printBgBox(const boost::geometry::model::box<bgPoint>& queryBox);
-  void detailedPlacement();
+  void diamondDPL();
   DbuPt nearestPt(const Node* cell, const DbuRect& rect) const;
   int distToRect(const Node* cell, const odb::Rect& rect) const;
   static bool checkOverlap(const odb::Rect& cell, const odb::Rect& box);
   bool checkOverlap(const Node* cell, const DbuRect& rect) const;
   static bool isInside(const odb::Rect& cell, const odb::Rect& box);
   bool isInside(const Node* cell, const odb::Rect& rect) const;
-  PixelPt searchNearestSite(const Node* cell, GridX x, GridY y) const;
+  PixelPt diamondSearch(const Node* cell, GridX x, GridY y) const;
   int calcDist(GridPt p0, GridPt p1) const;
   bool canBePlaced(const Node* cell, GridX bin_x, GridY bin_y) const;
   bool checkRegionOverlap(const Node* cell,
@@ -199,12 +239,14 @@ class Opendp
                    GridX x_end,
                    GridY y_end) const;
   bool checkMasterSym(unsigned masterSym, unsigned cellOri) const;
-  bool shiftMove(Node* cell);
-  bool mapMove(Node* cell);
-  bool mapMove(Node* cell, const GridPt& grid_pt);
+  bool checkRowPowerCompatible(const Node* cell, GridY y) const;
+  bool ripUpAndReplace(Node* cell);
+  bool diamondMove(Node* cell);
+  bool diamondMove(Node* cell, const GridPt& grid_pt);
   int distChange(const Node* cell, DbuX x, DbuY y) const;
   bool swapCells(Node* cell1, Node* cell2);
   bool refineMove(Node* cell);
+  void deepIterativePause(const std::string& message, bool only_print = false);
 
   DbuPt legalPt(const Node* cell, const DbuPt& pt) const;
   GridPt legalGridPt(const Node* cell, const DbuPt& pt) const;
@@ -278,9 +320,11 @@ class Opendp
   // Place fillers
   dbMasterSeq filterFillerMasters(const dbMasterSeq& filler_masters) const;
   MasterByImplant splitByImplant(const dbMasterSeq& filler_masters);
+  void setInitialGridCells();
   void setGridCells();
   dbMasterSeq& gapFillers(odb::dbTechLayer* implant,
                           GridX gap,
+                          DbuY row_height,
                           const MasterByImplant& filler_masters_by_implant);
   void placeRowFillers(GridY row,
                        const std::string& prefix,
@@ -322,7 +366,6 @@ class Opendp
   std::unique_ptr<PlacementDRC> drc_engine_;
   Journal* journal_ = nullptr;
 
-  bool have_multi_row_cells_ = false;
   int max_displacement_x_ = 0;  // sites
   int max_displacement_y_ = 0;  // sites
   bool disallow_one_site_gaps_ = false;
@@ -333,9 +376,9 @@ class Opendp
   RtreeBox regions_rtree_;
 
   // Filler placement.
-  // gap (in sites) -> seq of masters by implant
-  std::map<odb::dbTechLayer*, GapFillers> gap_fillers_;
-  std::map<odb::dbMaster*, int> filler_count_;
+  // gap (in sites) -> seq of masters by implant and row height
+  odb::PtrMap<odb::dbTechLayer, GapFillersByHeight> gap_fillers_;
+  odb::PtrMap<odb::dbMaster, int> filler_count_;
   bool have_fillers_ = false;
 
   // Decap placement.
@@ -352,12 +395,18 @@ class Opendp
   std::unique_ptr<DplObserver> debug_observer_;
   std::unique_ptr<Node> dummy_cell_;
   int jump_moves_ = 0;
-  bool iterative_placement_ = false;
+  int move_count_ = 1;
+  bool iterative_debug_ = false;
+  bool deep_iterative_debug_ = false;
+  bool incremental_ = false;
+  bool use_negotiation_ = false;
 
   // Magic numbers
   static constexpr double group_refine_percent_ = .05;
   static constexpr double refine_percent_ = .02;
   static constexpr int rand_seed_ = 777;
+  GlobalSwapParams global_swap_params_;
+  bool extra_dpl_enabled_ = false;
 };
 
 int divRound(int dividend, int divisor);

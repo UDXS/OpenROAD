@@ -9,8 +9,23 @@ cmake_policy(SET CMP0078 NEW)
 # Allows SWIG_MODULE_NAME to be set
 cmake_policy(SET CMP0086 NEW)
 
-# Allows <PackageName>_ROOT to be used
+# CMP0074: Allows find_package to use <PackageName>_ROOT variables. This
+# policy was the original mechanism for letting users specify custom
+# dependency locations.
 cmake_policy(SET CMP0074 NEW)
+
+# CMP0144: Standardizes the use of <PACKAGENAME>_ROOT (uppercase) variables
+# in find_package. Newer CMake modules rely on this policy for consistent
+# behavior. Setting both CMP0074 and CMP0144 ensures that both older and
+# newer find modules correctly respect custom dependency paths, which is
+# critical for builds in non-standard environments.
+cmake_policy(SET CMP0144 NEW)
+
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.27")
+  # Disallows <PACKAGENAME>_ROOT in find_package.
+  # TODO: resolve absl/or-tools issue and switch to NEW
+  cmake_policy(SET CMP0144 OLD)
+endif()
 
 # Allow AUTOUIC on generated source
 cmake_policy(SET CMP0071 NEW)
@@ -62,7 +77,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # Get version string in OPENROAD_VERSION
 if(NOT OPENROAD_VERSION)
   include(GetGitRevisionDescription)
-  git_describe(OPENROAD_VERSION)
+  git_describe(OPENROAD_VERSION --tags --match "[0-9][0-9]Q[0-9]")
   string(FIND ${OPENROAD_VERSION} "NOTFOUND" GIT_DESCRIBE_NOTFOUND)
   if(${GIT_DESCRIBE_NOTFOUND} GREATER -1)
     message(WARNING "OpenROAD git describe failed, using sha1 instead")
@@ -102,7 +117,7 @@ message(STATUS "C++ Standard Required: ${CMAKE_CXX_STANDARD_REQUIRED}")
 message(STATUS "C++ Extensions: ${CMAKE_CXX_EXTENSIONS}")
 
 # Detect OS distribution and version from /etc/os-release
-# LTO is known to cause build errors on Debian 11 and Rocky Linux 8
+# LTO is known to cause build errors on Rocky Linux 8
 set(LTO_UNSUPPORTED_OS FALSE)
 if(EXISTS "/etc/os-release")
   file(STRINGS "/etc/os-release" OS_RELEASE_CONTENTS)
@@ -118,8 +133,7 @@ if(EXISTS "/etc/os-release")
   endforeach()
 
   # Check for unsupported OS for LTO
-  if((OS_ID STREQUAL "debian" AND OS_VERSION_ID STREQUAL "11") OR
-     (OS_ID STREQUAL "rocky" AND OS_VERSION_ID MATCHES "^8"))
+  if(OS_ID STREQUAL "rocky" AND OS_VERSION_ID MATCHES "^8")
     set(LTO_UNSUPPORTED_OS TRUE)
     message(STATUS "Detected unsupported OS (${OS_ID} ${OS_VERSION_ID}): LTO will be disabled due to known build issues")
   endif()
@@ -219,3 +233,19 @@ endif()
 # Add a configuration for ReleaseWithAsserts
 set(CMAKE_CXX_FLAGS_RELEASEWITHASSERTS "${CMAKE_CXX_FLAGS_RELEASE} -UNDEBUG" CACHE STRING "" FORCE)
 set(CMAKE_C_FLAGS_RELEASEWITHASSERTS "${CMAKE_C_FLAGS_RELEASE} -UNDEBUG" CACHE STRING "" FORCE)
+
+# ==============================================================================
+# OPENROAD BUILD CONFIGURATION SUMMARY
+# ==============================================================================
+message(STATUS "")
+message(STATUS "=========================================================")
+message(STATUS " OpenROAD Configuration Summary ")
+message(STATUS "=========================================================")
+message(STATUS " C++ Standard   : ${CMAKE_CXX_STANDARD}")
+message(STATUS " Build Type     : ${CMAKE_BUILD_TYPE}")
+message(STATUS " GUI Support    : ${BUILD_GUI}")
+message(STATUS " Python Bindings: ${BUILD_PYTHON}")
+message(STATUS " Tests Enabled  : ${ENABLE_TESTS}")
+message(STATUS "=========================================================")
+message(STATUS " Configuration complete.")
+message(STATUS "")

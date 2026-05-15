@@ -7,6 +7,7 @@
 #include <iostream>
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "db/infra/frSegStyle.h"
@@ -317,7 +318,7 @@ class frLayer
   {
     spacingInfluence_ = in;
   }
-  bool hasEolSpacing() const { return (eols_.empty() ? false : true); }
+  bool hasEolSpacing() const { return !eols_.empty(); }
   void addEolSpacing(frSpacingEndOfLineConstraint* in) { eols_.push_back(in); }
   const std::vector<frSpacingEndOfLineConstraint*>& getEolSpacing() const
   {

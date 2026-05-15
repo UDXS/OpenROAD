@@ -16,6 +16,7 @@ cc_library(
         "src/dbSta.cc",
     ],
     hdrs = [
+        "include/db_sta/DelayFmt.hh",
         "include/db_sta/dbSta.hh",
     ],
     includes = [
@@ -24,12 +25,12 @@ cc_library(
     deps = [
         ":dbNetwork",
         ":dbSdcNetwork",
-        "//src/odb",
+        "//src/odb/src/db",
         "//src/sta:opensta_lib",
         "//src/utl",
         "@boost.json",
         "@spdlog",
-        "@tk_tcl//:tcl",
+        "@tcl_lang//:tcl",
     ],
 )
 
@@ -47,7 +48,7 @@ cc_library(
     deps = [
         ":dbNetwork",
         ":dbSta",
-        "//src/odb",
+        "//src/odb/src/db",
         "//src/sta:opensta_lib",
         "//src/utl",
     ],
@@ -67,7 +68,7 @@ cc_library(
     deps = [
         ":dbNetwork",
         ":dbSta",
-        "//src/odb",
+        "//src/odb/src/db",
         "//src/sta:opensta_lib",
         "//src/utl",
     ],
@@ -82,11 +83,30 @@ cc_library(
         "src/dbSdcNetwork.hh",
     ],
     includes = [
-        "include",
+        "src",
     ],
+    visibility = ["//visibility:private"],
     deps = [
         "//src/sta:opensta_lib",
         "@spdlog",
+    ],
+)
+
+cc_library(
+    name = "IpChecker",
+    srcs = [
+        "src/IpChecker.cc",
+    ],
+    hdrs = [
+        "include/db_sta/IpChecker.hh",
+    ],
+    includes = [
+        "include",
+    ],
+    deps = [
+        ":dbSta",
+        "//src/odb/src/db",
+        "//src/utl",
     ],
 )
 
@@ -104,7 +124,7 @@ cc_library(
         "include",
     ],
     deps = [
-        "//src/odb",
+        "//src/odb/src/db",
         "//src/sta:opensta_lib",
         "//src/utl",
     ],
@@ -113,6 +133,7 @@ cc_library(
 cc_library(
     name = "ui",
     srcs = [
+        "include/db_sta/IpChecker.hh",
         "src/MakeDbSta.cc",
         ":swig",
         ":tcl",
@@ -122,22 +143,23 @@ cc_library(
         "include/db_sta/MakeDbSta.hh",
     ],
     copts = [
-        "-Isrc/dbSta/src",
         "-Wno-missing-braces",  # from TCL swigging
     ],
     includes = [
         "include",
+        "src",
     ],
     deps = [
+        ":IpChecker",
         ":dbNetwork",
         ":dbSta",
         "//:ord",
-        "//src/odb",
+        "//src/odb/src/db",
         "//src/sta:opensta_lib",
         "//src/utl",
         "@boost.json",
         "@boost.stacktrace",
-        "@tk_tcl//:tcl",
+        "@tcl_lang//:tcl",
     ],
 )
 

@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "dpl/Opendp.h"
+#include "odb/db.h"
 #include "odb/util.h"
 #include "utl/Logger.h"
 
@@ -66,15 +67,36 @@ void Opendp::improvePlacement(const int seed,
 
   // Get needed information from DB.
   importDb();
-  // TODO: adjustNodesOrient() but it's currently causing an unrelated CI
-  // failure
+
+  // importDb() rebuilds the network from scratch; fresh Node objects have
+  // orientation hard coded as R0. The legalizer writes row-correct orientations
+  // to dbInst in its post-flush orient loop, so use this orientation for
+  // DetailedMgr DRC checks
+  for (const auto& node : network_->getNodes()) {
+    if (node->getType() == Node::CELL && !node->isFixed()) {
+      odb::dbInst* inst = node->getDbInst();
+      if (inst && inst->getPlacementStatus().isPlaced()) {
+        node->adjustCurrOrient(inst->getOrient());
+      }
+    }
+  }
+
   initGrid();
+
+  // Paint fixed cells into the grid before ShiftLegalizer runs.
+  // initGrid() resets all pixels.  Without setFixedGridCells(), fixed cells
+  // (endcaps, tapcells, macros) are invisible to canBePlaced() and DRC
+  // edge-spacing checks, so the DetailedMgr places movable cells into
+  // positions that create violations against fixed neighbours.
+  setFixedGridCells();
 
   const bool disallow_one_site_gaps = !odb::hasOneSiteMaster(db_);
 
   // A manager to track cells.
   DetailedMgr mgr(arch_.get(), network_.get(), grid_.get(), drc_engine_.get());
   mgr.setLogger(logger_);
+  mgr.setGlobalSwapParams(global_swap_params_);
+  mgr.setExtraDplEnabled(extra_dpl_enabled_);
   // Various settings.
   mgr.setSeed(seed);
   mgr.setMaxDisplacement(max_displacement_x, max_displacement_y);
@@ -87,7 +109,6 @@ void Opendp::improvePlacement(const int seed,
   // a bug in my code somewhere.
   ShiftLegalizer lg;
   lg.legalize(mgr);
-  setFixedGridCells();
 
   // Detailed improvement.  Runs through a number of different
   // optimizations aimed at wirelength improvement.  The last
