@@ -16,6 +16,7 @@
 #include "absl/synchronization/mutex.h"
 #include "boost/asio/thread_pool.hpp"
 #include "drt/PinAccessService.h"
+#include "odb/db.h"
 #include "odb/geom.h"
 
 namespace odb {
@@ -56,6 +57,22 @@ struct RouterConfiguration;
 class AbstractGraphicsFactory;
 class frViaDef;
 
+struct trApAbsoluteReference
+{
+  std::string master_name;
+  int pinAccessIdx;
+  std::string mterm_name;
+  int ap_x;
+  int ap_y;
+};
+
+struct trApAbsoluteEdge
+{
+  trApAbsoluteReference prev;
+  trApAbsoluteReference cur;
+  int cost;
+};
+
 struct ParamStruct
 {
   std::string outputMazeFile;
@@ -78,6 +95,8 @@ struct ParamStruct
   bool saveGuideUpdates = false;
   std::string repairPDNLayerName;
   int num_threads = 1;
+  int pa_abutment_epsilon = 0;
+  int pa_rtguide_mode = 0;
 };
 
 class TritonRoute : public PinAccessService
@@ -105,6 +124,19 @@ class TritonRoute : public PinAccessService
   void endFR();
   void pinAccess(const std::vector<odb::dbInst*>& target_insts
                  = std::vector<odb::dbInst*>());
+  // PAP-ML
+  std::vector<drt::trApAbsoluteEdge> ECRunAllUniqueInsts();
+  int ECcheckPairConflict(odb::dbITerm* term_a,
+                          int x_a,
+                          int y_a,
+                          odb::dbITerm* term_b,
+                          int x_b,
+                          int y_b);
+  void buildConflictGraphs(const std::vector<std::string>& paths,
+                           const std::vector<odb::Rect>& windows,
+                           int num_threads,
+                           bool window_level_parallelism);
+
   void stepDR(int size,
               int offset,
               int mazeEndIter,

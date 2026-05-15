@@ -99,6 +99,8 @@ struct RouterConfiguration
 
   template <class Archive>
   void serialize(Archive& ar, unsigned int version);
+  int PA_ABUTMENT_EPSILON = 0;
+  int PA_RTGUIDE_MODE = 0;
 };
 
 constexpr int DIRBITSIZE = 3;

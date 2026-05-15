@@ -7115,6 +7115,20 @@ class dbAccessPoint : public dbObject
   static dbAccessPoint* getAccessPoint(dbBlock* block, uint32_t dbid);
 
   static void destroy(dbAccessPoint* ap);
+
+  
+  // Additional Methods to fetch via info
+  int getNumViaOptions() const;
+
+  int getNumVias(int option_idx) const;
+
+  dbVia* getBlockVia(int option_idx, int via_idx) const;
+  
+  dbTechVia* getTechVia(int option_idx, int via_idx) const;
+  
+  bool isBlockVia(int option_idx, int via_idx) const;
+
+
   // User Code End dbAccessPoint
 };
 

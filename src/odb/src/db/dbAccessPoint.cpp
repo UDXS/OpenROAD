@@ -321,6 +321,51 @@ dbBPin* dbAccessPoint::getBPin() const
   _dbBlock* block = (_dbBlock*) obj->getOwner();
   return (dbBPin*) block->bpin_tbl_->getPtr(obj->bpin_);
 }
+
+int dbAccessPoint::getNumViaOptions() const
+{
+  _dbAccessPoint* obj = (_dbAccessPoint*) this;
+  return obj->vias_.size();
+}
+
+int dbAccessPoint::getNumVias(int option_idx) const
+{
+  _dbAccessPoint* obj = (_dbAccessPoint*) this;
+  return obj->vias_.at(option_idx).size();
+}
+
+bool dbAccessPoint::isBlockVia(int option_idx, int via_idx) const
+{
+  _dbAccessPoint* obj = (_dbAccessPoint*) this;
+  const auto& [type, id] = obj->vias_.at(option_idx).at(via_idx);
+  return type == dbObjectType::dbViaObj;
+}
+
+dbVia* dbAccessPoint::getBlockVia(int option_idx, int via_idx) const
+{
+  _dbAccessPoint* obj = (_dbAccessPoint*) this;
+  const auto& [type, id] = obj->vias_.at(option_idx).at(via_idx);
+
+  if (type != dbObjectType::dbViaObj)
+    return nullptr;
+
+  _dbBlock* block = (_dbBlock*) obj->getOwner();
+  return (dbVia*) block->via_tbl_->getPtr(dbId<_dbVia>(id));
+}
+
+dbTechVia* dbAccessPoint::getTechVia(int option_idx, int via_idx) const
+{
+  _dbAccessPoint* obj = (_dbAccessPoint*) this;
+  const auto& [type, id] = obj->vias_.at(option_idx).at(via_idx);
+
+  if (type != dbObjectType::dbTechViaObj)
+    return nullptr;
+
+  dbDatabase* db = (dbDatabase*) obj->getDatabase();
+  _dbTech* tech = (_dbTech*) db->getTech();
+  return (dbTechVia*) tech->via_tbl_->getPtr(dbId<_dbTechVia>(id));
+}
+
 std::vector<std::vector<dbObject*>> dbAccessPoint::getVias() const
 {
   _dbAccessPoint* obj = (_dbAccessPoint*) this;

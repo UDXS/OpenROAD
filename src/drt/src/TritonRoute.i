@@ -66,7 +66,9 @@ void detailed_route_cmd(const char* outputMazeFile,
                         int minAccessPoints,
                         bool saveGuideUpdates,
                         const char* repairPDNLayerName,
-                        int drcReportIterStep)
+                        int drcReportIterStep,
+                        int pa_abutment_epsilon,
+                        int pa_rtguide_mode)
 {
   auto* router = ord::OpenRoad::openRoad()->getTritonRoute();
   const int num_threads = ord::OpenRoad::openRoad()->getThreadCount();
@@ -89,7 +91,9 @@ void detailed_route_cmd(const char* outputMazeFile,
                     minAccessPoints,
                     saveGuideUpdates,
                     repairPDNLayerName,
-                    num_threads});
+                    num_threads,
+                    pa_abutment_epsilon,
+                    pa_rtguide_mode});
   router->main();
   router->setDistributed(false);
 }
@@ -99,7 +103,9 @@ void pin_access_cmd(const char* dbProcessNode,
                     int verbose,
                     int minAccessPoints,
                     const char* viaInPinBottomLayer,
-                    const char* viaInPinTopLayer)
+                    const char* viaInPinTopLayer,
+                    int pa_abutment_epsilon,
+                    int pa_rtguide_mode)
 {
   auto* router = ord::OpenRoad::openRoad()->getTritonRoute();
   drt::ParamStruct params;
@@ -110,6 +116,8 @@ void pin_access_cmd(const char* dbProcessNode,
   params.viaInPinBottomLayer = viaInPinBottomLayer;
   params.viaInPinTopLayer = viaInPinTopLayer;
   params.num_threads = ord::OpenRoad::openRoad()->getThreadCount();
+  params.pa_abutment_epsilon = pa_abutment_epsilon; 
+  params.pa_rtguide_mode = pa_rtguide_mode; 
   router->setParams(params);
   router->pinAccess();
   router->setDistributed(false);
