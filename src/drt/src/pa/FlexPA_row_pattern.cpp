@@ -710,7 +710,7 @@ int FlexPA::getEdgeCost(FlexDPNode* prev_node,
     const int prev_node_cost = prev_node->getNodeCost();
     const int curr_node_cost = curr_node->getNodeCost();
     
-    edge_cost = (prev_node_cost + curr_node_cost) / 2;
+    edge_cost = prev_node_cost + curr_node_cost;
 
     // If non-zero epsilon and if two cells are not abutting, 
     // then we wish to apply a large cost if two boundary APs are sharing a track and a weak one if they are one track apart.
@@ -725,7 +725,7 @@ int FlexPA::getEdgeCost(FlexDPNode* prev_node,
       }
     }
   } else {
-    edge_cost = 1000;
+    edge_cost = kViolationCost;
   }
 
   return edge_cost;

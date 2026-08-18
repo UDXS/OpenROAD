@@ -41,6 +41,9 @@ cc_library(
         "src/pusher.h",
         "src/shapes.h",
     ],
+    includes = [
+        "src",
+    ],
     deps = [
         "//src/odb/src/db",
         "//src/utl",
@@ -55,6 +58,9 @@ cc_library(
     hdrs = [
         "src/MplObserver.h",
         "src/clusterEngine.h",
+    ],
+    includes = [
+        "src",
     ],
     visibility = ["//visibility:private"],
     deps = [
@@ -87,7 +93,6 @@ cc_library(
         ":mpl_private_hdrs",
         ":pusher",
         ":snapper",
-        "//src/dbSta",
         "//src/dbSta:dbNetwork",
         "//src/odb/src/db",
         "//src/par",
@@ -163,5 +168,8 @@ filegroup(
 )
 
 messages_txt(
-    visibility = ["//src/mpl/test:__pkg__"],
+    visibility = [
+        "//docs:__pkg__",
+        "//src/mpl/test:__pkg__",
+    ],
 )

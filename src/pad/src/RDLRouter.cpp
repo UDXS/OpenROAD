@@ -13,6 +13,7 @@
 #include <memory>
 #include <queue>
 #include <set>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -37,6 +38,44 @@
 #include "utl/Logger.h"
 
 namespace pad {
+
+namespace {
+
+// Order routes by their source terminal id so ripup iteration (and the edge
+// re-add order it drives) is deterministic, not heap-address dependent.
+struct RDLRoutePtrLess
+{
+  bool operator()(const std::shared_ptr<RDLRoute>& lhs,
+                  const std::shared_ptr<RDLRoute>& rhs) const
+  {
+    return lhs->getTerminal()->getId() < rhs->getTerminal()->getId();
+  }
+};
+
+bool compareRouteTargets(const RouteTarget& lhs, const RouteTarget& rhs)
+{
+  if (lhs.center.x() != rhs.center.x()) {
+    return lhs.center.x() < rhs.center.x();
+  }
+  if (lhs.center.y() != rhs.center.y()) {
+    return lhs.center.y() < rhs.center.y();
+  }
+  if (lhs.shape.xMin() != rhs.shape.xMin()) {
+    return lhs.shape.xMin() < rhs.shape.xMin();
+  }
+  if (lhs.shape.yMin() != rhs.shape.yMin()) {
+    return lhs.shape.yMin() < rhs.shape.yMin();
+  }
+  if (lhs.shape.xMax() != rhs.shape.xMax()) {
+    return lhs.shape.xMax() < rhs.shape.xMax();
+  }
+  if (lhs.shape.yMax() != rhs.shape.yMax()) {
+    return lhs.shape.yMax() < rhs.shape.yMax();
+  }
+  return lhs.terminal->getId() < rhs.terminal->getId();
+}
+
+}  // namespace
 
 class RDLRouterDistanceHeuristic
     : public boost::astar_heuristic<GridGraph, int64_t>
@@ -129,6 +168,7 @@ RDLRouter::RDLRouter(
     int width,
     int spacing,
     bool allow45,
+    bool fixed,
     float turn_penalty,
     int max_iterations)
     : logger_(logger),
@@ -139,6 +179,7 @@ RDLRouter::RDLRouter(
       width_(width),
       spacing_(spacing),
       allow45_(allow45),
+      fixed_(fixed),
       turn_penalty_(turn_penalty),
       max_router_iterations_(max_iterations),
       routing_map_(routing_map),
@@ -351,7 +392,7 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
   makeGraph();
 
   // Determine access points
-  std::unordered_map<odb::Point, std::set<GridGraphEdge>> remove_edges;
+  std::unordered_map<odb::Point, GridGraphEdgeSet> remove_edges;
   for (auto& [net, iterm_targets] : routing_targets_) {
     for (auto& [iterm, targets] : iterm_targets) {
       for (auto& target : targets) {
@@ -365,7 +406,7 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
   remove_edges.clear();
 
   if (gui_ != nullptr) {
-    gui_->pause(false);
+    gui_->pause("routing graph and terminal access points are built", false);
   }
 
   // Build list of routes
@@ -464,7 +505,21 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
         }
 
         std::ranges::stable_sort(targets, [](const auto& lhs, const auto& rhs) {
-          return distance(lhs) < distance(rhs);
+          const auto lhs_dist = distance(lhs);
+          const auto rhs_dist = distance(rhs);
+          if (lhs_dist != rhs_dist) {
+            return lhs_dist < rhs_dist;
+          }
+          if (lhs.target0->center.x() != rhs.target0->center.x()) {
+            return lhs.target0->center.x() < rhs.target0->center.x();
+          }
+          if (lhs.target0->center.y() != rhs.target0->center.y()) {
+            return lhs.target0->center.y() < rhs.target0->center.y();
+          }
+          if (lhs.target1->center.x() != rhs.target1->center.x()) {
+            return lhs.target1->center.x() < rhs.target1->center.x();
+          }
+          return lhs.target1->center.y() < rhs.target1->center.y();
         });
 
         debugPrint(
@@ -556,7 +611,12 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
     if (gui_ != nullptr
         && (logger_->debugCheck(utl::PAD, "Router", 3) || isDebugNet(net))) {
       const bool use_timeout = route->isRouted() && !isDebugNet(net);
-      gui_->pause(use_timeout);
+      gui_->pause(fmt::format("{} {} on {} ({} route(s) left in the queue)",
+                              route->isRouted() ? "routed" : "failed to route",
+                              src->getName(),
+                              net->getName(),
+                              route_queue.size()),
+                  use_timeout);
     }
 
     if (route_queue.empty() && iteration_count < max_router_iterations_) {
@@ -584,7 +644,11 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
 
       if (gui_ != nullptr
           && (logger_->debugCheck(utl::PAD, "Router", 2) || isDebugNet(net))) {
-        gui_->pause(false);
+        gui_->pause(fmt::format("{} route(s) failed at the end of routing "
+                                "iteration {}, before ripup",
+                                failed.size(),
+                                iteration_count),
+                    false);
       }
 
       debugPrint(logger_,
@@ -605,7 +669,7 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
       }
 
       // find routes to ripup
-      std::set<RDLRoutePtr> ripup;
+      std::set<RDLRoutePtr, RDLRoutePtrLess> ripup;
       for (const auto& failed_route : failed) {
         for (const auto& route : routes_) {
           if (!route->isRouted()) {
@@ -656,7 +720,13 @@ void RDLRouter::route(const std::vector<odb::dbNet*>& nets)
       }
 
       if (gui_ != nullptr && logger_->debugCheck(utl::PAD, "Router", 2)) {
-        gui_->pause(false);
+        gui_->pause(
+            fmt::format("ripped up {} route(s) and requeued {} failed route(s) "
+                        "in routing iteration {}",
+                        ripup.size(),
+                        failed.size(),
+                        iteration_count),
+            false);
       }
     }
   }
@@ -753,7 +823,7 @@ static odb::Point getValidGridPoint(
 }
 
 void RDLRouter::cleanupGraphEdges(
-    const std::unordered_map<odb::Point, std::set<GridGraphEdge>>& edges)
+    const std::unordered_map<odb::Point, GridGraphEdgeSet>& edges)
 {
   if (edges.empty()) {
     return;
@@ -780,7 +850,7 @@ void RDLRouter::cleanupGraphEdges(
 
 void RDLRouter::populateTerminalAccessPoints(
     RouteTarget& target,
-    std::unordered_map<odb::Point, std::set<GridGraphEdge>>& edges) const
+    std::unordered_map<odb::Point, GridGraphEdgeSet>& edges) const
 {
   // determine new access point in graph
   std::set<odb::Point> snap_pts;
@@ -812,7 +882,11 @@ void RDLRouter::populateTerminalAccessPoints(
       gui_->addSnap(target.center, snap);
     }
     gui_->zoomToSnap(true);
-    gui_->pause(false);
+    gui_->pause(fmt::format("{} candidate access point(s) for {} before "
+                            "violations are removed",
+                            snap_pts.size(),
+                            target.terminal->getName()),
+                false);
     gui_->clearSnap();
   }
 
@@ -918,8 +992,12 @@ void RDLRouter::populateTerminalAccessPoints(
       gui_->addSnap(target.center, snap);
     }
     gui_->zoomToSnap(true);
-    gui_->pause(!isDebugNet(target.terminal->getNet())
-                && !isDebugPin(target.terminal));
+    gui_->pause(
+        fmt::format("{} access point(s) remain for {} after violations "
+                    "are removed",
+                    snap_pts.size(),
+                    target.terminal->getName()),
+        !isDebugNet(target.terminal->getNet()) && !isDebugPin(target.terminal));
     gui_->clearSnap();
   }
 
@@ -1005,8 +1083,12 @@ RDLRouter::TerminalAccess RDLRouter::insertTerminalAccess(
       gui_->addSnap(target.center, snap);
     }
     gui_->zoomToSnap(true);
-    gui_->pause(!isDebugNet(target.terminal->getNet())
-                && !isDebugPin(target.terminal));
+    gui_->pause(
+        fmt::format("{} access point(s) usable for {} after points "
+                    "conflicting with committed routes are removed",
+                    snap_pts.size(),
+                    target.terminal->getName()),
+        !isDebugNet(target.terminal->getNet()) && !isDebugPin(target.terminal));
     gui_->clearSnap();
   }
 
@@ -1103,8 +1185,12 @@ RDLRouter::TerminalAccess RDLRouter::insertTerminalAccess(
 
   if (logger_->debugCheck(utl::PAD, "Terminal", 1) && gui_ != nullptr) {
     gui_->zoomToSnap(false);
-    gui_->pause(!isDebugNet(target.terminal->getNet())
-                && !isDebugPin(target.terminal));
+    gui_->pause(
+        fmt::format("terminal access for {} is inserted into the "
+                    "routing graph, {} edge(s) removed",
+                    target.terminal->getName(),
+                    access.removed_edges.size()),
+        !isDebugNet(target.terminal->getNet()) && !isDebugPin(target.terminal));
     gui_->clearSnap();
   }
 
@@ -1137,20 +1223,15 @@ bool RDLRouter::is45DegreeEdge(const odb::Point& pt0,
   return RDLRoute::is45DegreeEdge(pt0, pt1);
 }
 
-std::set<GridGraphEdge> RDLRouter::getVertexEdges(
-    const GridGraphVertex& vertex) const
+GridGraphEdgeSet RDLRouter::getVertexEdges(const GridGraphVertex& vertex) const
 {
-  std::set<GridGraphEdge> edges;
+  GridGraphEdgeSet edges;
 
+  // The graph is undirected, so out_edges already yields every incident edge.
   GridGraph::out_edge_iterator oit, oend;
   std::tie(oit, oend) = boost::out_edges(vertex, graph_);
   for (; oit != oend; oit++) {
     edges.insert(*oit);
-  }
-  GridGraph::in_edge_iterator iit, iend;
-  std::tie(iit, iend) = boost::in_edges(vertex, graph_);
-  for (; iit != iend; iit++) {
-    edges.insert(*iit);
   }
 
   return edges;
@@ -1159,7 +1240,7 @@ std::set<GridGraphEdge> RDLRouter::getVertexEdges(
 std::vector<RDLRouter::GridEdge> RDLRouter::commitRoute(
     const std::vector<GridGraphVertex>& route)
 {
-  std::set<GridGraphEdge> edges;
+  GridGraphEdgeSet edges;
   for (const auto& v : route) {
     const auto v_edges = getVertexEdges(v);
     edges.insert(v_edges.begin(), v_edges.end());
@@ -1554,7 +1635,9 @@ bool RDLRouter::addGraphEdge(const odb::Point& point0,
     return false;
   }
 
-  const int64_t weight = edge_weight_scale * distance(point0, point1);
+  const int64_t direction_bias = point0.y() == point1.y() ? 1 : 0;
+  const int64_t weight
+      = edge_weight_scale * distance(point0, point1) + direction_bias;
 
   debugPrint(logger_,
              utl::PAD,
@@ -1685,7 +1768,8 @@ void RDLRouter::writeToDb(odb::dbNet* net,
     return;
   }
 
-  odb::dbSWire* swire = odb::dbSWire::create(net, odb::dbWireType::ROUTED);
+  odb::dbSWire* swire = odb::dbSWire::create(
+      net, fixed_ ? odb::dbWireType::FIXED : odb::dbWireType::ROUTED);
   for (const odb::Rect& stub : stubs) {
     odb::dbSBox::create(swire,
                         layer_,
@@ -2171,6 +2255,10 @@ RDLRouter::generateRoutingTargets(odb::dbNet* net) const
              "{} has {} targets",
              net->getName(),
              targets.size());
+
+  for (auto& [iterm, iterm_targets] : targets) {
+    std::ranges::sort(iterm_targets, compareRouteTargets);
+  }
 
   return targets;
 }

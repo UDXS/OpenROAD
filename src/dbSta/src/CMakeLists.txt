@@ -11,16 +11,13 @@ add_library(dbSta_lib
   dbReadVerilog.cc
   SpefWriter.cc
   IpChecker.cc
+  DmpCeffLambertWDelayCalc.cc
 )
 
 target_include_directories(dbSta_lib
   PUBLIC
     ../include
     ${PROJECT_SOURCE_DIR}/include
-  PRIVATE
-    # Needed for search/Levelize.hh and the unprefixed transitive
-    # OpenSTA headers it includes (e.g. Graph.hh) which are not part of
-    # OpenSTA's public include.
     ${OPENSTA_HOME}
     ${OPENSTA_HOME}/include/sta
 )
@@ -28,7 +25,7 @@ target_include_directories(dbSta_lib
 
 target_link_libraries(dbSta_lib
   PUBLIC
-    odb
+    db
     OpenSTA
   PRIVATE
     utl_lib

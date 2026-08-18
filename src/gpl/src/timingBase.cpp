@@ -4,6 +4,7 @@
 #include "timingBase.h"
 
 #include <algorithm>
+#include <boost/scope_exit.hpp>
 #include <cmath>
 #include <cstddef>
 #include <functional>
@@ -122,12 +123,20 @@ void TimingBase::setTimingNetsPercentage(float percentage)
   nets_percentage_ = percentage;
 }
 
-bool TimingBase::executeTimingDriven(bool run_journal_restore)
+bool TimingBase::executeTimingDriven(bool run_journal_restore,
+                                     bool enable_repair_timing)
 {
-  rs_->findResizeSlacks(run_journal_restore);
+  {
+    BOOST_SCOPE_EXIT_ALL(&)
+    {
+      if (!run_journal_restore) {
+        nbc_->fixPointers();
+      }
+    };
 
-  if (!run_journal_restore) {
-    nbc_->fixPointers();
+    rs_->findResizeSlacks(run_journal_restore,
+                          (enable_repair_timing && repair_timing_),
+                          repair_tns_end_percent_);
   }
 
   // get worst resize nets

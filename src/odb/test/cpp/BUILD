@@ -18,7 +18,6 @@ cc_test(
     deps = [
         "//src/odb/src/db",
         "//src/odb/src/lefout",
-        "//src/tst",
         "//src/tst:sky130_fixture",
         "//src/utl",
         "@googletest//:gtest",
@@ -34,7 +33,6 @@ cc_test(
     deps = [
         "//src/odb/src/db",
         "//src/odb/test/cpp/helper",
-        "//src/tst",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -49,7 +47,7 @@ cc_test(
     deps = [
         "//src/odb/src/db",
         "//src/odb/test/cpp/helper",
-        "//src/tst",
+        "//src/tst:db_fixture",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
         "@spdlog",
@@ -64,10 +62,19 @@ cc_test(
     deps = [
         "//src/odb/src/db",
         "//src/odb/test/cpp/helper",
-        "//src/tst",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
-        "@spdlog",
+    ],
+)
+
+cc_test(
+    name = "TestDbSet",
+    srcs = ["TestDbSet.cpp"],
+    deps = [
+        "//src/odb/src/db",
+        "//src/odb/test/cpp/helper",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
     ],
 )
 
@@ -93,7 +100,6 @@ cc_test(
     deps = [
         "//src/odb/src/db",
         "//src/odb/test/cpp/helper",
-        "//src/tst",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -107,8 +113,7 @@ cc_test(
         "//src/odb/src/db",
         "//src/odb/src/gdsin",
         "//src/odb/src/gdsout",
-        "//src/odb/test/cpp/helper",
-        "//src/tst",
+        "//src/tst:db_fixture",
         "//src/utl",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
@@ -213,6 +218,8 @@ cc_test(
         "TestAbstractLef.cc",
         "TestDbNet.cpp",
         "TestDbWire.cc",
+        "TestDesignIsRouted.cpp",
+        "TestOrderWires.cpp",
         "TestPolygonalFloorplan.cc",
     ],
     args = [],
@@ -240,7 +247,7 @@ cc_test(
     srcs = ["TestObjectType.cpp"],
     deps = [
         "//src/odb/src/db",
-        "//src/tst",
+        "//src/tst:db_fixture",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -257,7 +264,6 @@ cc_test(
     deps = [
         "//src/odb/src/db",
         "//src/odb/src/defin",
-        "//src/tst",
         "//src/tst:nangate45_fixture",
         "//src/utl",
         "@googletest//:gtest",
@@ -277,9 +283,7 @@ cc_test(
         "//src/odb/src/3dblox",
         "//src/odb/src/db",
         "//src/odb/test/cpp/helper",
-        "//src/tst",
-        "//src/tst:nangate45_fixture",
-        "//src/utl",
+        "//src/tst:db_fixture",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -289,6 +293,7 @@ cc_test(
     name = "Test3DBloxChecker",
     srcs = [
         "Test3DBloxChecker.cpp",
+        "Test3DBloxCheckerAlignmentMarkers.cpp",
         "Test3DBloxCheckerBumps.cpp",
         "Test3DBloxCheckerFixture.h",
         "Test3DBloxCheckerLogicalConn.cpp",
@@ -299,9 +304,7 @@ cc_test(
     deps = [
         "//src/odb/src/3dblox",
         "//src/odb/src/db",
-        "//src/tst",
-        "//src/tst:nangate45_fixture",
-        "//src/utl",
+        "//src/tst:db_fixture",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -318,10 +321,7 @@ cc_test(
     deps = [
         "//src/odb/src/3dblox",
         "//src/odb/src/db",
-        "//src/odb/test/cpp/helper",
-        "//src/tst",
-        "//src/tst:nangate45_fixture",
-        "//src/utl",
+        "//src/tst:db_fixture",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -336,13 +336,8 @@ cc_test(
         "//src/odb/test:regression_resources",
     ],
     deps = [
-        "//src/dbSta",
-        "//src/dbSta:dbNetwork",
         "//src/odb/src/db",
-        "//src/sta:opensta_lib",
-        "//src/tst",
         "//src/tst:integrated_fixture",
-        "//src/utl",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -355,13 +350,12 @@ cc_test(
     ],
     data = [
         "//src/odb/test:regression_resources",
+        "//test:nangate45_data",
     ],
     deps = [
         "//src/dbSta:dbNetwork",
         "//src/odb/src/db",
         "//src/tst",
-        "//src/tst:integrated_fixture",
-        "//src/utl",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -374,12 +368,12 @@ cc_test(
     ],
     data = [
         "//src/odb/test:regression_resources",
+        "//test:nangate45_data",
     ],
     deps = [
         "//src/dbSta:dbNetwork",
         "//src/odb/src/db",
         "//src/tst",
-        "//src/tst:integrated_fixture",
         "//src/utl",
         "@googletest//:gtest",
         "@googletest//:gtest_main",

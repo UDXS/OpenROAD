@@ -13,6 +13,8 @@
 #include "db_sta/dbNetwork.hh"
 #include "odb/PtrSetMap.h"
 #include "odb/db.h"
+#include "odb/dbTypes.h"
+#include "odb/util.h"
 #include "sta/Network.hh"
 #include "sta/NetworkClass.hh"
 #include "utl/Logger.h"
@@ -617,6 +619,9 @@ std::string dbEditHierarchy::makeUniqueName(odb::dbModule* module,
   } else {
     base_name = name;
   }
+
+  // Newly punched hierarchy ports and nets are scalar objects.
+  base_name = odb::replaceBracketsWithUnderscores(base_name);
 
   odb::dbBlock* block = db_network_->block();
   std::string full = block->makeNewNetName(

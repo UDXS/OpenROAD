@@ -25,6 +25,7 @@
 #include "db/tech/frLayer.h"
 #include "db/tech/frTechObject.h"
 #include "db/tech/frViaDef.h"
+#include "drt-global.h"
 #include "frBaseTypes.h"
 #include "frDesign.h"
 #include "frRTree.h"
@@ -92,6 +93,9 @@ struct frApAbsoluteEdge
 };
 
 using frInstLocationSet = std::set<frInst*, frInstLocationComp>;
+
+inline constexpr int kRepeatedApCost = 1000;
+inline constexpr int kViolationCost = 1000000;
 
 class FlexPinAccessPattern;
 class FlexDPNode;
@@ -482,7 +486,7 @@ class FlexPA
    * @param inst_term the instance terminal
    * @param aps Vector contaning the access points
    * @param apset Set containing access points data (auxilary)
-   * @param rec Rect limiting where the point can be
+   * @param rect Rect limiting where the point can be
    * @param layer_num access point layer
    * @param x_coords map of access point x coords
    * @param y_coords map of access point y coords
@@ -592,7 +596,7 @@ class FlexPA
    * @param begin_point The begin reference point
    * @param layer_num layer where the point is being created
    * @param dir direction where the point will be created
-   * @param is_block wether the begin_point is from a macro block
+   * @param is_block whether the begin_point is from a macro block
    *
    * @returns the generated end point
    */

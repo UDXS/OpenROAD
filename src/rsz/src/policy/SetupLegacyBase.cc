@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -88,6 +89,7 @@ bool SetupLegacyBase::repairSetupPin(const sta::Pin* end_pin)
   }
 
   initializeSetupServices();
+  target_collector_->init(config_.setup_slack_margin);
   setup_context_.max_repairs_per_pass = 1;
 
   sta::Vertex* end_vertex = graph_->pinLoadVertex(end_pin);
@@ -168,8 +170,9 @@ void SetupLegacyBase::buildMainMoveSequence(const bool log_sequence)
         case MoveType::kSizeUp:
           move_sequence_.push_back(MoveType::kSizeUp);
           break;
-        case MoveType::kSizeDown:
-          pushMoveIfEnabled(!config_.skip_size_down, MoveType::kSizeDown);
+        case MoveType::kSizeDownFanout:
+          pushMoveIfEnabled(!config_.skip_size_down_fanout,
+                            MoveType::kSizeDownFanout);
           break;
         case MoveType::kClone:
           pushMoveIfEnabled(!config_.skip_gate_cloning, MoveType::kClone);
@@ -196,7 +199,7 @@ void SetupLegacyBase::buildMainMoveSequence(const bool log_sequence)
     pushMoveIfEnabled(!config_.skip_vt_swap && hasVtSwapCells(),
                       MoveType::kVtSwap);
     move_sequence_.push_back(MoveType::kSizeUp);
-    if (!config_.skip_size_down) {
+    if (!config_.skip_size_down_fanout) {
       // Disabled by default for legacy parity.
     }
     pushMoveIfEnabled(!config_.skip_pin_swap, MoveType::kSwapPins);
@@ -242,7 +245,7 @@ bool SetupLegacyBase::beginJournaledEndpointSearch(
   endpoint_state.pass = 1;
   endpoint_state.decreasing_slack_passes = 0;
   endpoint_state.force_single_repair = false;
-  resizer_.journalBegin();
+  committer_.beginJournal();
   endpoint_state.journal_open = true;
   return true;
 }
@@ -263,9 +266,7 @@ void SetupLegacyBase::acceptEndpointState(
   if (!endpoint_state.journal_open) {
     return;
   }
-
-  resizer_.journalEnd();
-  committer_.acceptPendingMoves();
+  committer_.commitJournal();
   endpoint_state.journal_open = false;
 }
 
@@ -275,9 +276,7 @@ void SetupLegacyBase::restoreEndpointState(
   if (!endpoint_state.journal_open) {
     return;
   }
-
-  resizer_.journalRestore();
-  committer_.rejectPendingMoves();
+  committer_.restoreJournal();
   endpoint_state.journal_open = false;
 }
 
@@ -295,7 +294,7 @@ void SetupLegacyBase::saveImprovedCheckpoint(
     SetupLegacyBase::EndpointRepairState& endpoint_state)
 {
   acceptEndpointState(endpoint_state);
-  resizer_.journalBegin();
+  committer_.beginJournal();
   endpoint_state.journal_open = true;
 }
 
@@ -454,8 +453,29 @@ bool SetupLegacyBase::makePinTargetOnPath(const sta::Pin* pin,
     return false;
   }
 
+  // Search the main path first, then the latch D fanin path of a
+  // latch-through path.
   sta::PathExpanded expanded(path, sta_);
-  for (int index = expanded.startIndex(); index < expanded.size(); index++) {
+  return visitPathSegments(
+      path,
+      expanded,
+      sta_,
+      [&](const sta::Path* seg_path, sta::PathExpanded& seg_expanded) {
+        return makePinTargetInExpandedPath(
+            pin, vertex, seg_path, seg_expanded, focus_slack, target);
+      });
+}
+
+bool SetupLegacyBase::makePinTargetInExpandedPath(const sta::Pin* pin,
+                                                  sta::Vertex* vertex,
+                                                  const sta::Path* path,
+                                                  sta::PathExpanded& expanded,
+                                                  const sta::Slack focus_slack,
+                                                  Target& target) const
+{
+  const int start_index = static_cast<int>(expanded.startIndex());
+  const int path_count = static_cast<int>(expanded.size());
+  for (int index = start_index; index < path_count; index++) {
     const sta::Path* driver_path = expanded.path(index);
     sta::Vertex* path_vertex = driver_path->vertex(sta_);
     const sta::Pin* path_pin = driver_path->pin(sta_);
@@ -600,7 +620,7 @@ int SetupLegacyBase::repairProgressIncrement(const MoveType type,
 
 bool SetupLegacyBase::allowsBatchRepair(const MoveType type)
 {
-  return type == MoveType::kSizeDown;
+  return type == MoveType::kSizeDownFanout;
 }
 
 bool SetupLegacyBase::tryCandidateSequence(
@@ -630,11 +650,12 @@ bool SetupLegacyBase::tryCandidateSequence(
   return false;
 }
 
-bool SetupLegacyBase::trySizeDownBatch(MoveGenerator& generator,
-                                       const Target& target,
-                                       const int repairs_per_pass,
-                                       int& changed,
-                                       std::optional<MoveType>& accepted_type)
+bool SetupLegacyBase::trySizeDownFanoutBatch(
+    MoveGenerator& generator,
+    const Target& target,
+    const int repairs_per_pass,
+    int& changed,
+    std::optional<MoveType>& accepted_type)
 {
   bool accepted_batch = false;
   while (tryCandidateSequence(
@@ -687,11 +708,11 @@ bool SetupLegacyBase::tryRepairTarget(
                network_->pathName(live_target.driver_pin));
 
     if (allowsBatchRepair(type)) {
-      if (trySizeDownBatch(generator,
-                           live_target,
-                           repairs_per_pass,
-                           changed,
-                           accepted_type)) {
+      if (trySizeDownFanoutBatch(generator,
+                                 live_target,
+                                 repairs_per_pass,
+                                 changed,
+                                 accepted_type)) {
         return true;
       }
       continue;
@@ -728,7 +749,6 @@ bool SetupLegacyBase::repairPath(sta::Path* path,
     return false;
   }
 
-  const sta::Scene* corner = path->scene(sta_);
   if (path->minMax(sta_) != resizer_.max_) {
     logger_->error(utl::RSZ,
                    kMsgRepairSetupExpectedMaxPath,
@@ -736,27 +756,50 @@ bool SetupLegacyBase::repairPath(sta::Path* path,
     return false;
   }
 
-  const auto load_delays
-      = rankPathDrivers(expanded, corner, corner->libertyIndex(resizer_.max_));
   const int repairs_per_pass = repairBudget(path_slack, force_single_repair);
+
+  // Rank drivers on the main path and, for latch-through paths, on the latch
+  // D fanin path, then merge both segments into a single ranking.
+  std::vector<std::pair<Target, sta::Delay>> ranked_targets;
+  visitPathSegments(
+      path,
+      expanded,
+      sta_,
+      [&](const sta::Path* seg_path, sta::PathExpanded& seg_expanded) {
+        const sta::Scene* seg_corner = seg_path->scene(sta_);
+        const std::vector<std::pair<int, sta::Delay>> load_delays
+            = rankPathDrivers(seg_expanded,
+                              seg_corner,
+                              seg_corner->libertyIndex(resizer_.max_));
+        ranked_targets.reserve(ranked_targets.size() + load_delays.size());
+        for (const std::pair<int, sta::Delay>& load_delay : load_delays) {
+          Target target;
+          makePathDriverTarget(
+              seg_path, seg_expanded, load_delay.first, path_slack, target);
+          ranked_targets.emplace_back(std::move(target), load_delay.second);
+        }
+        return false;
+      });
 
   debugPrint(logger_,
              RSZ,
              "repair_setup",
              3,
-             "Path slack: {}, repairs: {}, load_delays: {}",
+             "Path slack: {}, repairs: {}, ranked_targets: {}",
              delayAsString(path_slack, 3, sta_),
              repairs_per_pass,
-             load_delays.size());
+             ranked_targets.size());
 
-  // Construct target vector
+  std::ranges::stable_sort(ranked_targets,
+                           [](const std::pair<Target, sta::Delay>& lhs,
+                              const std::pair<Target, sta::Delay>& rhs) {
+                             return lhs.second > rhs.second;
+                           });
+
   std::vector<Target> targets;
-  targets.reserve(load_delays.size());
-  for (const auto& [drvr_index, ignored] : load_delays) {
-    static_cast<void>(ignored);
-    Target target;
-    makePathDriverTarget(path, expanded, drvr_index, path_slack, target);
-    targets.push_back(std::move(target));
+  targets.reserve(ranked_targets.size());
+  for (std::pair<Target, sta::Delay>& ranked_target : ranked_targets) {
+    targets.push_back(std::move(ranked_target.first));
   }
 
   // Prewarm for legacy MT policy
@@ -836,7 +879,7 @@ void SetupLegacyBase::printProgress(const int iteration,
       "| {: >+7.1f}% | {: >8s} | {: >10s} | {: >10s} | {: >6d} | {}",
       itr_field,
       totalMoves(MoveType::kUnbuffer),
-      totalMoves(MoveType::kSizeUp) + totalMoves(MoveType::kSizeDown)
+      totalMoves(MoveType::kSizeUp) + totalMoves(MoveType::kSizeDownFanout)
           + totalMoves(MoveType::kSizeUpMatch) + totalMoves(MoveType::kVtSwap),
       totalMoves(MoveType::kBuffer) + totalMoves(MoveType::kSplitLoad),
       totalMoves(MoveType::kClone),

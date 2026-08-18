@@ -20,6 +20,7 @@ COMPULSORY_TESTS = [
     "net_name_consistency",
     "coordinates",
     "no_merging",
+    "short_resover",
 ]
 
 # From CMakeLists.txt or_integration_tests(PASSFAIL_TESTS
@@ -96,6 +97,7 @@ filegroup(
                 "ext_pattern.rules",
                 "gcd.def",
             ],
+            "short_resover": ["gcd.def"],
         }.get(test_name, []),
     )
     for test_name in ALL_TESTS
@@ -118,9 +120,14 @@ test_suite(
 
 cc_test(
     name = "rcx_unittest",
-    srcs = ["ext2dBoxTest.cpp"],
+    srcs = [
+        "TestExtractor.cpp",
+        "ext2dBoxTest.cpp",
+    ],
     deps = [
+        "//src/odb/src/db",
         "//src/rcx",
+        "//src/utl",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],

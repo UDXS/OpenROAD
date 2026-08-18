@@ -26,8 +26,10 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "DmpCeffLambertWDelayCalc.hh"
 #include "boost/json.hpp"
 #include "boost/json/src.hpp"
 #include "dbSdcNetwork.hh"
@@ -37,14 +39,15 @@
 #include "odb/dbBlockCallBackObj.h"
 #include "odb/dbObject.h"
 #include "odb/dbTypes.h"
-#include "search/Levelize.hh"
 #include "sta/ArcDelayCalc.hh"
 #include "sta/Clock.hh"
 #include "sta/Delay.hh"
+#include "sta/DelayCalc.hh"
 #include "sta/EquivCells.hh"
 #include "sta/Graph.hh"
 #include "sta/GraphCmp.hh"
 #include "sta/GraphDelayCalc.hh"
+#include "sta/LevelizeObserver.hh"
 #include "sta/Liberty.hh"
 #include "sta/MinMax.hh"
 #include "sta/Mode.hh"
@@ -181,6 +184,9 @@ class dbStaCbk : public odb::dbBlockCallBackObj
                           const odb::dbIoType& io_type) override;
   void inDbBTermSetSigType(odb::dbBTerm* bterm,
                            const odb::dbSigType& sig_type) override;
+  // 3DIC: warn + skip for chiplet boundary-port edits (not supported for
+  // incremental timing). Returns true when the edit was declined.
+  bool decline3DicBoundaryEdit(odb::dbBTerm* bterm, const char* what);
   void inDbModInstCreate(odb::dbModInst* modinst) override;
   void inDbModInstDestroy(odb::dbModInst* modinst) override;
   void inDbModBTermPostConnect(odb::dbModBTerm* modbterm) override;
@@ -221,6 +227,8 @@ std::once_flag init_sta_flag;
 dbSta::dbSta(Tcl_Interp* tcl_interp, odb::dbDatabase* db, utl::Logger* logger)
 {
   std::call_once(init_sta_flag, []() { sta::initSta(); });
+  sta::registerDelayCalc("dmp_ceff_lambert_w",
+                         sta::makeDmpCeffLambertWDelayCalc);
   initVars(tcl_interp, db, logger);
   if (!sta::Sta::sta()) {
     sta::Sta::setSta(this);
@@ -297,24 +305,23 @@ void dbSta::makeSdcNetwork()
   sdc_network_ = new dbSdcNetwork(network_);
 }
 
-// Levelize::setObserver takes ownership and deletes the prior observer,
-// so this composite must replicate the StaLevelizeObserver behavior that
-// Sta::makeObservers installs (forwarding to Search and GraphDelayCalc)
-// in addition to invalidating dbSta's cache.
-class DbStaLevelizeObserver : public LevelizeObserver
+// Extend the default StaLevelizeObserver (Search + GraphDelayCalc forwarding)
+// to also invalidate dbSta's driver-vertex cache.
+class DbStaLevelizeObserver : public StaLevelizeObserver
 {
  public:
-  explicit DbStaLevelizeObserver(dbSta* sta) : sta_(sta) {}
+  DbStaLevelizeObserver(dbSta* sta, Search* search, GraphDelayCalc* gdc)
+      : StaLevelizeObserver(search, gdc), sta_(sta)
+  {
+  }
   void levelsChangedBefore() override
   {
-    sta_->search()->levelsChangedBefore();
-    sta_->graphDelayCalc()->levelsChangedBefore();
+    StaLevelizeObserver::levelsChangedBefore();
     sta_->invalidateLevelizedDrvrVertices();
   }
   void levelChangedBefore(Vertex* vertex) override
   {
-    sta_->search()->levelChangedBefore(vertex);
-    sta_->graphDelayCalc()->levelChangedBefore(vertex);
+    StaLevelizeObserver::levelChangedBefore(vertex);
     sta_->invalidateLevelizedDrvrVertices();
   }
 
@@ -325,7 +332,8 @@ class DbStaLevelizeObserver : public LevelizeObserver
 void dbSta::makeObservers()
 {
   Sta::makeObservers();
-  levelize_->setObserver(new DbStaLevelizeObserver(this));
+  setLevelizeObserver(
+      new DbStaLevelizeObserver(this, search_, graph_delay_calc_));
 }
 
 void dbSta::invalidateLevelizedDrvrVertices()
@@ -383,7 +391,59 @@ void dbSta::postReadDef(odb::dbBlock* block)
 
 void dbSta::postRead3Dbx(odb::dbChip* chip)
 {
-  // TODO: we are not ready to do timing on chiplets yet
+  if (chip == nullptr) {
+    return;
+  }
+  // Timing-precondition policy first: on an unsupported or malformed
+  // configuration, warn and decline the 3DIC timing network -- never abort
+  // the read (this callback also fires in pure-odb structural flows). The
+  // structural 3DBlox model stays intact either way.
+  if (!db_network_->isChipSupportedForTiming(chip)) {
+    logger_->warn(utl::STA,
+                  3000,
+                  "3DIC timing network not created for chip {} (see prior "
+                  "warnings). Structural 3DBlox data is unaffected.",
+                  chip->getName());
+    return;
+  }
+  // The unfolded model is already built before this callback fires
+  // (dbDatabase::triggerPostRead3Dbx constructs it before notifying
+  // observers), so STA can consume it directly here.
+  db_network_->setTopChip(chip);
+  if (!db_network_->has3DicChip()) {
+    // Leaf/flat chip (own dbBlock): routed through the single-block path;
+    // no chiplet callbacks to hook.
+    return;
+  }
+
+  // dbBlockCallBackObj is single-owner (addOwner removes the previous owner).
+  // The 3DIC top has no own dbBlock; callbacks must hook every chiplet's
+  // dbBlock, so allocate one dbStaCbk per chiplet block rather than reusing
+  // db_cbk_ (which would unhook all but the last chiplet).
+  chiplet_cbks_.clear();
+  // Dedupe by block: hook one dbStaCbk per distinct chiplet dbBlock. A dbBlock
+  // holds a LIST of callbacks, so hooking one per chip-inst would register
+  // redundant live callbacks. setTopChip has already declined hierarchical
+  // (STA-3001) and duplicated (STA-3004) masters, so every chip-inst here has
+  // a distinct, own dbBlock; the dedupe set is defensive.
+  odb::PtrSet<odb::dbBlock> hooked_blocks;
+  for (odb::dbChipInst* chip_inst : chip->getChipInsts()) {
+    odb::dbBlock* chiplet_block = db_network_->blockOf(chip_inst);
+    if (chiplet_block == nullptr) {
+      continue;
+    }
+    if (!hooked_blocks.insert(chiplet_block).second) {
+      continue;  // already hooked
+    }
+    auto cbk = std::make_unique<dbStaCbk>(this);
+    cbk->setNetwork(db_network_);
+    cbk->addOwner(chiplet_block);
+    chiplet_cbks_.push_back(std::move(cbk));
+  }
+
+  // No unconditional INFO banner here: read_3dbx runs on pure-odb flows too,
+  // and announcing "STA active" on every read is noise. The structural
+  // counts are available on demand via report_3dic_summary.
 }
 
 void dbSta::postReadDb(odb::dbDatabase* db)
@@ -395,6 +455,13 @@ void dbSta::postReadDb(odb::dbDatabase* db)
     if (block) {
       db_cbk_->addOwner(block);
       db_cbk_->setNetwork(db_network_);
+    }
+    // A restored 3DIC database (write_db/read_db round-trip) arrives through
+    // this callback, not postRead3Dbx. The structural chip data is intact
+    // and odb rebuilt the unfolded model during the read; run the same 3DIC
+    // timing initialization so the restored design is timeable.
+    if (dbNetwork::is3DicTopChip(chip)) {
+      postRead3Dbx(chip);
     }
   }
 }
@@ -614,7 +681,7 @@ dbSta::InstType dbSta::getInstanceType(odb::dbInst* inst)
   if (lib_cell->isLevelShifter()) {
     return STD_LEVEL_SHIFT;
   }
-  if (lib_cell->hasSequentials()) {
+  if (lib_cell->isSequential()) {
     return STD_SEQUENTIAL;
   }
   if (lib_cell->portCount() == 0) {
@@ -676,8 +743,6 @@ void dbSta::reportCellUsage(odb::dbModule* module,
   auto block = db_->getChip()->getBlock();
   const double area_to_microns = std::pow(block->getDbUnitsPerMicron(), 2);
 
-  const char* header_format = "{:37} {:>7} {:>10}";
-  const char* format = "  {:35} {:>7} {:>10.2f}";
   if (block->getTopModule() != module) {
     logger_->report("Cell type report for {} ({})",
                     module->getModInst()->getHierarchicalName(),
@@ -685,7 +750,6 @@ void dbSta::reportCellUsage(odb::dbModule* module,
   } else {
     countPhysicalOnlyInstancesByType(instances_types, insts);
   }
-  logger_->report(header_format, "Cell type report:", "Count", "Area");
 
   const std::regex regexp(" |/|-");
   std::string metrics_suffix;
@@ -693,17 +757,50 @@ void dbSta::reportCellUsage(odb::dbModule* module,
     metrics_suffix = fmt::format("__in_module:{}", module->getName());
   }
 
+  int max_type_name_length = 0;
+  int max_master_name_length = 0;
   int total_usage = 0;
   int64_t total_area = 0;
   for (auto [type, stats] : instances_types) {
     total_usage += stats.count;
+    total_area += stats.area;
+    max_type_name_length
+        = std::max(max_type_name_length,
+                   static_cast<int>(getInstanceTypeText(type).size()));
+  }
+  if (verbose) {
+    for (auto inst : insts) {
+      auto master = inst->getMaster();
+      max_master_name_length = std::max(
+          max_master_name_length, static_cast<int>(master->getName().size()));
+    }
   }
 
+  const int column_padding = 2;
+
+  const int count_width = std::max(
+      7, static_cast<int>(std::to_string(total_usage).size()) + column_padding);
+  const int area_width
+      = std::max(10,
+                 static_cast<int>(
+                     fmt::format("{:.2f}", total_area / area_to_microns).size())
+                     + column_padding);
+  const int type_width = std::max({37,
+                                   max_master_name_length + column_padding,
+                                   max_type_name_length + column_padding});
+
+  const std::string header_format = fmt::format(
+      "{{:{}}} {{:>{}}} {{:>{}}}", type_width, count_width, area_width);
+  const std::string format = fmt::format("  {{:{}}} {{:>{}}} {{:>{}.2f}}",
+                                         type_width - 2,
+                                         count_width,
+                                         area_width);
+
+  logger_->report(header_format, "Cell type report:", "Count", "Area");
   for (auto [type, stats] : instances_types) {
     const std::string type_name = getInstanceTypeText(type);
     logger_->report(
         format, type_name, stats.count, stats.area / area_to_microns);
-    total_area += stats.area;
 
     const std::string type_class
         = toLowerCase(regex_replace(type_name, regexp, "_"));
@@ -817,12 +914,11 @@ void dbSta::reportTimingHistogram(int num_bins,
   histogram.report(/*precision=*/3);
 }
 
-void dbSta::reportLogicDepthHistogram(int num_bins,
-                                      bool exclude_buffers,
+std::vector<int> dbSta::levelsOfLogic(bool exclude_buffers,
                                       bool exclude_inverters) const
 {
-  utl::Histogram<int> histogram(logger_);
-
+  std::vector<int> depths;
+  depths.reserve(sta_->endpoints().size());
   sta_->worstSlack(MinMax::max());  // Update timing.
   for (sta::Vertex* vertex : sta_->endpoints()) {
     int path_length = 0;
@@ -843,9 +939,19 @@ void dbSta::reportLogicDepthHistogram(int num_bins,
       }
       path = path->prevPath();
     }
-    histogram.addData(path_length);
+    depths.push_back(path_length);
   }
+  return depths;
+}
 
+void dbSta::reportLogicDepthHistogram(int num_bins,
+                                      bool exclude_buffers,
+                                      bool exclude_inverters) const
+{
+  utl::Histogram<int> histogram(logger_);
+  for (int depth : levelsOfLogic(exclude_buffers, exclude_inverters)) {
+    histogram.addData(depth);
+  }
   histogram.generateBins(num_bins);
   histogram.report();
 }
@@ -1331,8 +1437,33 @@ void dbStaCbk::inDbBTermPreDisconnect(odb::dbBTerm* bterm)
   network_->disconnectPinBefore(pin);
 }
 
+// 3DIC: these callbacks are hooked on chiplet blocks, whose bterms are
+// chiplet boundary ports, NOT top-level ports -- they own no Port on the
+// synthesized top cell and no graph vertex (the bump's pad iterm is the
+// boundary pin). Routing them through the 2D top-port path would mutate the
+// wrong cell (or null-deref in setTopPortDirection). Incremental editing of
+// a chiplet boundary is not supported yet: warn loudly and skip, so a future
+// edit flow fails visibly instead of silently going stale.
+bool dbStaCbk::decline3DicBoundaryEdit(odb::dbBTerm* bterm, const char* what)
+{
+  if (!network_->has3DicChip()) {
+    return false;
+  }
+  network_->getLogger()->warn(
+      utl::STA,
+      3007,
+      "3DIC: {} of chiplet boundary port {} is not supported for incremental "
+      "timing; re-read the design to re-time.",
+      what,
+      bterm->getName());
+  return true;
+}
+
 void dbStaCbk::inDbBTermCreate(odb::dbBTerm* bterm)
 {
+  if (decline3DicBoundaryEdit(bterm, "creation")) {
+    return;
+  }
   sta_->getDbNetwork()->makeTopPort(bterm);
   Pin* pin = network_->dbToSta(bterm);
   sta_->makePortPinAfter(pin);
@@ -1340,6 +1471,9 @@ void dbStaCbk::inDbBTermCreate(odb::dbBTerm* bterm)
 
 void dbStaCbk::inDbBTermDestroy(odb::dbBTerm* bterm)
 {
+  if (decline3DicBoundaryEdit(bterm, "destruction")) {
+    return;
+  }
   sta_->disconnectPin(network_->dbToSta(bterm));
   // sta::NetworkEdit does not support port removal.
 }
@@ -1347,12 +1481,18 @@ void dbStaCbk::inDbBTermDestroy(odb::dbBTerm* bterm)
 void dbStaCbk::inDbBTermSetIoType(odb::dbBTerm* bterm,
                                   const odb::dbIoType& io_type)
 {
+  if (decline3DicBoundaryEdit(bterm, "direction change")) {
+    return;
+  }
   sta_->getDbNetwork()->setTopPortDirection(bterm, io_type);
 }
 
 void dbStaCbk::inDbBTermSetSigType(odb::dbBTerm* bterm,
                                    const odb::dbSigType& sig_type)
 {
+  if (decline3DicBoundaryEdit(bterm, "signal-type change")) {
+    return;
+  }
   // sta can't handle such changes, see OpenROAD#6025, so just reset the whole
   // thing.
   sta_->networkChangedNonSdc();
@@ -1388,48 +1528,6 @@ void dbStaCbk::inDbModBTermPreDisconnect(odb::dbModBTerm* modbterm)
 }
 
 ////////////////////////////////////////////////////////////////
-
-sta::LibertyPort* getLibertyScanEnable(const sta::LibertyCell* lib_cell)
-{
-  sta::LibertyCellPortIterator iter(lib_cell);
-  while (iter.hasNext()) {
-    sta::LibertyPort* port = iter.next();
-    sta::ScanSignalType signal_type = port->scanSignalType();
-    if (signal_type == sta::ScanSignalType::enable
-        || signal_type == sta::ScanSignalType::enable_inverted) {
-      return port;
-    }
-  }
-  return nullptr;
-}
-
-sta::LibertyPort* getLibertyScanIn(const sta::LibertyCell* lib_cell)
-{
-  sta::LibertyCellPortIterator iter(lib_cell);
-  while (iter.hasNext()) {
-    sta::LibertyPort* port = iter.next();
-    sta::ScanSignalType signal_type = port->scanSignalType();
-    if (signal_type == sta::ScanSignalType::input
-        || signal_type == sta::ScanSignalType::input_inverted) {
-      return port;
-    }
-  }
-  return nullptr;
-}
-
-sta::LibertyPort* getLibertyScanOut(const sta::LibertyCell* lib_cell)
-{
-  sta::LibertyCellPortIterator iter(lib_cell);
-  while (iter.hasNext()) {
-    sta::LibertyPort* port = iter.next();
-    sta::ScanSignalType signal_type = port->scanSignalType();
-    if (signal_type == sta::ScanSignalType::output
-        || signal_type == sta::ScanSignalType::output_inverted) {
-      return port;
-    }
-  }
-  return nullptr;
-}
 
 void dbSta::dumpModInstPinSlacks(const char* mod_inst_name,
                                  const char* filename,
@@ -1635,7 +1733,7 @@ void dbSta::dumpModInstGraphConnections(const char* mod_inst_name,
 
         bool is_external = false;
         if (from_pin) {
-          std::string_view pin_name = network()->name(from_pin);
+          std::string pin_name = network()->name(from_pin);
           std::string mod_prefix = db_mod_inst->getName();
           mod_prefix += "/";  // e.g., "_202_/"
           if (!pin_name.starts_with(mod_prefix)) {

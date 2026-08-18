@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "db_sta/DelayFmt.hh"  // IWYU pragma: keep
+#include "db_sta/dbNetwork.hh"
 #include "odb/PtrSetMap.h"
 #include "odb/db.h"
 #include "odb/dbBlockCallBackObj.h"
@@ -206,6 +207,10 @@ class dbSta : public Sta, public odb::dbDatabaseObserver
                                  bool exclude_buffers,
                                  bool exclude_inverters) const;
 
+  // Get the levels of logic for all endpoints.
+  std::vector<int> levelsOfLogic(bool exclude_buffers,
+                                 bool exclude_inverters) const;
+
   utl::Logger* getLogger() { return logger_; }
 
   // Sanity checkers
@@ -248,16 +253,14 @@ class dbSta : public Sta, public odb::dbDatabaseObserver
   dbNetwork* db_network_ = nullptr;
   dbStaReport* db_report_ = nullptr;
   std::unique_ptr<dbStaCbk> db_cbk_;
+  // dbBlockCallBackObj has set-semantics (one owner per object). For 3DIC the
+  // top has no own dbBlock; callbacks must hook every chiplet's dbBlock, so
+  // allocate one dbStaCbk per chiplet block here.
+  std::vector<std::unique_ptr<dbStaCbk>> chiplet_cbks_;
   std::set<dbStaState*> sta_states_;
 
   VertexSeq levelized_drvr_vertices_;
   bool drvr_vertices_level_valid_ = false;
 };
-
-// Utilities for TestCell
-
-sta::LibertyPort* getLibertyScanEnable(const LibertyCell* lib_cell);
-sta::LibertyPort* getLibertyScanIn(const LibertyCell* lib_cell);
-sta::LibertyPort* getLibertyScanOut(const LibertyCell* lib_cell);
 
 }  // namespace sta

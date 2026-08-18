@@ -1444,6 +1444,7 @@ void ICeWall::routeRDL(odb::dbTechLayer* layer,
                        int width,
                        int spacing,
                        bool allow45,
+                       bool fixed,
                        float turn_penalty,
                        int max_iterations)
 {
@@ -1460,6 +1461,7 @@ void ICeWall::routeRDL(odb::dbTechLayer* layer,
                                         width,
                                         spacing,
                                         allow45,
+                                        fixed,
                                         turn_penalty,
                                         max_iterations);
   router_->setRDLDebugNet(rdl_net_debug_);
@@ -1477,7 +1479,7 @@ void ICeWall::routeRDLDebugGUI(bool enable)
 {
   if (enable) {
     if (router_gui_ == nullptr) {
-      router_gui_ = std::make_unique<RDLGui>();
+      router_gui_ = std::make_unique<RDLGui>(logger_);
       if (router_ != nullptr) {
         router_gui_->setRouter(router_.get());
       }

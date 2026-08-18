@@ -99,8 +99,9 @@ void Straps::checkLayerSpecifications() const
       getLogger()->error(
           utl::PDN,
           175,
-          "Pitch {:.4f} is too small for, must be atleast {:.4f}",
+          "Pitch {:.4f} is too small for {}, must be at least {:.4f}",
           layer.dbuToMicron(pitch_),
+          layer_->getName(),
           layer.dbuToMicron(min_pitch));
     }
   }
@@ -1590,6 +1591,19 @@ bool PadDirectConnectionStraps::refineShape(
 
 bool PadDirectConnectionStraps::isTargetShape(const Shape* shape) const
 {
+  // Pad direct connections run from a pad pin toward the core power grid.  They
+  // must not target shapes that belong to an instance (macro) grid: those
+  // stripes sit inside the core over the macro, and snapping a pad connection
+  // to them drags the connection deep into the core (issue #10490).  Only
+  // shapes owned by core/existing grids are valid landing targets.
+  const auto* component = shape->getGridComponent();
+  if (component != nullptr) {
+    const auto* grid = component->getGrid();
+    if (grid != nullptr && grid->type() == Grid::kInstance) {
+      return false;
+    }
+  }
+
   if (target_shapes_type_) {
     return shape->getType() == target_shapes_type_.value();
   }
@@ -2343,7 +2357,8 @@ void RepairChannelStraps::repairGridChannels(
 
   if (!channels.empty() && renderer != nullptr) {
     renderer->update();
-    renderer->pause();
+    renderer->pause(fmt::format(
+        "{} channel(s) to repair in {}", channels.size(), grid->getLongName()));
   }
 
   if (channels.empty()) {

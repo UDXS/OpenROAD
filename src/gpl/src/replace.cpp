@@ -10,6 +10,8 @@
 #include <utility>
 
 #include "AbstractGraphics.h"
+#include "clockBase.h"
+#include "db_sta/dbNetwork.hh"
 #include "db_sta/dbSta.hh"
 #include "graphicsNone.h"
 #include "initialPlace.h"
@@ -21,9 +23,13 @@
 #include "placerBase.h"
 #include "routeBase.h"
 #include "rsz/Resizer.hh"
+#include "sta/Graph.hh"
+#include "sta/Path.hh"
 #include "sta/StaMain.hh"
+#include "sta/StaState.hh"
 #include "timingBase.h"
 #include "utl/Logger.h"
+#include "utl/timer.h"
 #include "utl/validation.h"
 
 namespace gpl {
@@ -38,6 +44,40 @@ Replace::Replace(odb::dbDatabase* odb,
     : db_(odb), sta_(sta), rs_(resizer), fr_(router), log_(logger)
 {
   graphics_ = std::make_unique<GraphicsNone>();
+
+  // Register "orig_name" report_path field: original pin name before
+  // multi-bit clustering. Reads "orig_name" property off the path
+  // vertex's iterm. Registered at tool init so paths can be reported
+  // even when the design is loaded from an already-clustered .odb
+  // without re-running cluster_flops.
+  if (sta_->findReportPathField(kOrigNameProp) == nullptr) {
+    sta::dbNetwork* network = sta_->getDbNetwork();
+    sta_->makeReportPathField(
+        kOrigNameProp,
+        kOrigNameProp,
+        "Orig Name",
+        36,
+        true,
+        nullptr,
+        [network](const sta::Path* path,
+                  const sta::StaState* sta) -> std::string {
+          if (path == nullptr) {
+            return {};
+          }
+          const sta::Pin* pin = path->vertex(sta)->pin();
+          // staToDb requires all three out-params; only iterm is used.
+          odb::dbITerm* iterm = nullptr;
+          odb::dbBTerm* bterm = nullptr;
+          odb::dbModITerm* moditerm = nullptr;
+          network->staToDb(pin, iterm, bterm, moditerm);
+          if (iterm == nullptr) {
+            return {};
+          }
+          odb::dbStringProperty* prop
+              = odb::dbStringProperty::find(iterm, kOrigNameProp);
+          return prop ? prop->getValue() : std::string{};
+        });
+  }
 }
 
 Replace::~Replace() = default;
@@ -62,6 +102,7 @@ void Replace::reset()
 
   tb_.reset();
   rb_.reset();
+  cb_.reset();
 }
 
 void Replace::addPlacementCluster(const Cluster& cluster)
@@ -165,8 +206,10 @@ void Replace::doIncrementalPlace(const int threads, const PlaceOptions& options)
 
 void Replace::doPlace(const int threads, const PlaceOptions& options)
 {
+  utl::Timer timer;
   doInitialPlace(threads, options);
   doNesterovPlace(threads, options);
+  log_->info(GPL, 500, "Runtime: {:.2f}s", timer.elapsed());
 }
 
 void Replace::doInitialPlace(const int threads, const PlaceOptions& options)
@@ -210,7 +253,8 @@ void Replace::runMBFF(const int max_sz,
                       const float alpha,
                       const float beta,
                       const int threads,
-                      const int num_paths)
+                      const int num_paths,
+                      const float clock_power_weight)
 {
   MBFF pntset(db_,
               sta_,
@@ -221,7 +265,7 @@ void Replace::runMBFF(const int max_sz,
               num_paths,
               gui_debug_,
               graphics_->MakeNew(log_));
-  pntset.Run(max_sz, alpha, beta);
+  pntset.Run(max_sz, alpha, beta, clock_power_weight);
 }
 
 bool Replace::initNesterovPlace(const PlaceOptions& options,
@@ -273,6 +317,24 @@ bool Replace::initNesterovPlace(const PlaceOptions& options,
     tb_->setTimingNetWeightOverflows(options.timingNetWeightOverflows);
     tb_->setTimingNetWeightMax(options.timingNetWeightMax);
     tb_->setTimingNetsPercentage(options.timingDrivenNetsPercentage);
+    tb_->setRepairTiming(options.timingDrivenRepairTiming);
+    tb_->setRepairTnsEndPercent(options.timingDrivenRepairTnsEndPercent);
+  }
+
+  if (!cb_ && options.virtualCtsMode) {
+    float skew_fraction = options.virtualCtsMaxSkewFraction;
+    // Clamp to a sane range; a negative value yields negative insertion
+    // delays and values above the clock period make no physical sense.
+    if (skew_fraction < 0.0f || skew_fraction > 1.0f) {
+      log_->warn(GPL,
+                 165,
+                 "virtual_cts_max_skew_fraction {} out of range [0, 1]; "
+                 "clamping.",
+                 skew_fraction);
+      skew_fraction = std::clamp(skew_fraction, 0.0f, 1.0f);
+    }
+    cb_ = std::make_shared<ClockBase>(sta_, db_, log_);
+    cb_->setMaxSkewFraction(skew_fraction);
   }
 
   if (!np_) {
@@ -300,6 +362,7 @@ bool Replace::initNesterovPlace(const PlaceOptions& options,
                                           nbVec_,
                                           rb_,
                                           tb_,
+                                          cb_,
                                           graphics_->MakeNew(log_),
                                           log_);
   }
