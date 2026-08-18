@@ -335,16 +335,6 @@ dbMPin* dbAccessPoint::getMPin() const
   return (dbMPin*) master->mpin_tbl_->getPtr(obj->mpin_);
 }
 
-dbBPin* dbAccessPoint::getBPin() const
-{
-  _dbAccessPoint* obj = (_dbAccessPoint*) this;
-  if (!obj->bpin_.isValid()) {
-    return nullptr;
-  }
-  _dbBlock* block = (_dbBlock*) obj->getOwner();
-  return (dbBPin*) block->bpin_tbl_->getPtr(obj->bpin_);
-}
-
 int dbAccessPoint::getNumViaOptions() const
 {
   _dbAccessPoint* obj = (_dbAccessPoint*) this;
